@@ -1,9 +1,12 @@
 import os
 import time
 import math
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from supabase import create_client, Client as SupabaseClient
+from hachoir.metadata import extractMetadata
+from hachoir.parser import createParser
 
 # Chargement des variables d'environnement (Render)
 API_ID = int(os.environ.get("API_ID", 0))
@@ -19,14 +22,35 @@ supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 user_data = {}
 admin_filter = filters.user(ADMIN)
 
-# Fonction d'affichage de la barre de progression (Amélioration majeure)
+def get_video_metadata(file_path):
+    """Extrait dynamiquement la durée et les dimensions d'une vidéo via Hachoir."""
+    duration = 0
+    width = 0
+    height = 0
+    try:
+        parser = createParser(file_path)
+        if parser:
+            with parser:
+                metadata = extractMetadata(parser)
+                if metadata:
+                    if metadata.has("duration"):
+                        duration = int(metadata.get("duration").seconds)
+                    if metadata.has("width"):
+                        width = int(metadata.get("width"))
+                    if metadata.has("height"):
+                        height = int(metadata.get("height"))
+    except Exception as e:
+        print(f"Erreur d'extraction des métadonnées Hachoir : {e}")
+    return duration, width, height
+
+# Fonction d'affichage de la barre de progression
 async def progress_bar(current, total, reply_msg, text, start_time):
     now = time.time()
     diff = now - start_time
     if round(diff % 4.00) == 0 or current == total: # Mise à jour toutes les 4 secondes
         percentage = current * 100 / total
-        speed = current / diff
-        time_to_completion = round((total - current) / speed)
+        speed = current / diff if diff > 0 else 0
+        time_to_completion = round((total - current) / speed) if speed > 0 else 0
         
         # Formatage visuel [██░░░░░░░░]
         progress = math.floor(percentage / 10)
@@ -94,38 +118,62 @@ async def start_download_upload(client, callback_query):
         progress_args=(msg, "📥 **Téléchargement depuis Telegram...**", start_time)
     )
     
+    if not download_path:
+        await msg.edit("❌ **Échec du téléchargement du média.**")
+        return
+
     directory = os.path.dirname(download_path)
     final_path = os.path.join(directory, new_name)
     os.rename(download_path, final_path)
     
-    # 2. Gestion de la miniature
+    # 2. Gestion de la miniature depuis Supabase
     thumb_file = None
     response = supabase.table("bot_settings").select("thumbnail_file_id").eq("user_id", ADMIN).execute()
     if response.data:
         thumb_file = await client.download_media(message=response.data[0]["thumbnail_file_id"], file_name="thumb.jpg")
 
-    # 3. Téléversement avec barre de progression
+    # 3. Extraction des métadonnées vidéo si le mode vidéo est choisi
+    duration, width, height = 0, 0, 0
+    if upload_type == "upload_video":
+        await msg.edit("⚙️ **Extraction des métadonnées vidéo (Hachoir)...**")
+        duration, width, height = get_video_metadata(final_path)
+
+    # 4. Téléversement avec barre de progression
     await msg.edit("⚡ **Préparation du téléversement...**")
     start_time = time.time()
     
     try:
         if upload_type == "upload_video":
             await client.send_video(
-                chat_id=ADMIN, video=final_path, caption=f"✅ `{new_name}`", thumb=thumb_file,
-                progress=progress_bar, progress_args=(msg, "📤 **Envoi de la vidéo sur Telegram...**", start_time)
+                chat_id=ADMIN,
+                video=final_path,
+                caption=f"✅ `{new_name}`",
+                thumb=thumb_file,
+                duration=duration,
+                width=width,
+                height=height,
+                supports_streaming=True,  # Active le lecteur de streaming natif
+                progress=progress_bar,
+                progress_args=(msg, "📤 **Envoi de la vidéo sur Telegram...**", start_time)
             )
         else:
             await client.send_document(
-                chat_id=ADMIN, document=final_path, caption=f"✅ `{new_name}`", thumb=thumb_file,
-                progress=progress_bar, progress_args=(msg, "📤 **Envoi du fichier sur Telegram...**", start_time)
+                chat_id=ADMIN,
+                document=final_path,
+                caption=f"✅ `{new_name}`",
+                thumb=thumb_file,
+                progress=progress_bar,
+                progress_args=(msg, "📤 **Envoi du fichier sur Telegram...**", start_time)
             )
         await msg.delete()
     except Exception as e:
-        await msg.edit(f"❌ Erreur : {str(e)}")
+        await msg.edit(f"❌ Erreur lors du téléversement : {str(e)}")
     finally:
+        # Nettoyage strict des fichiers temporaires pour économiser l'espace Render
         if os.path.exists(final_path): os.remove(final_path)
         if thumb_file and os.path.exists(thumb_file): os.remove(thumb_file)
-        del user_data[user_id]
+        if user_id in user_data: del user_data[user_id]
 
 if __name__ == "__main__":
+    print("Bot Renamer Pro actif !")
     bot.run()
