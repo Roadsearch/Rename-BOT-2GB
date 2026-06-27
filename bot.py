@@ -192,5 +192,27 @@ async def start_download_upload(client, callback_query):
         if user_id in user_data: del user_data[user_id]
 
 if __name__ == "__main__":
+    # 🌐 Micro-serveur HTTP factice pour valider le démarrage sur Render Free
+    import http.server
+    import threading
+
+    class DummyServer(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Bot actif et fonctionnel sur Render !")
+
+    def run_server():
+        # Render injecte automatiquement le port attendu dans la variable PORT
+        port = int(os.environ.get("PORT", 10000))
+        server = http.server.HTTPServer(("0.0.0.0", port), DummyServer)
+        print(f"Faux serveur d'écoute activé sur le port {port}")
+        server.serve_forever()
+
+    # Démarre le faux serveur sur un fil (thread) secondaire
+    threading.Thread(target=run_server, daemon=True).start()
+
+    # Démarrage normal et principal de votre bot Telegram
     print("Bot optimisé pour les fichiers lourds (2 Go) démarré !")
     bot.run()
+
