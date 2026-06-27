@@ -6,3 +6,4 @@ hachoir
 aiohttp
 pytz
 psutil
+ffmpeg-python
