@@ -8,7 +8,11 @@ from supabase import create_client, Client as SupabaseClient
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
 
-# Chargement des variables d'environnement (Render)
+# Configuration et dossiers temporaires pour Render
+DOWNLOAD_DIR = "./downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# Chargement des variables d'environnement
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -23,10 +27,8 @@ user_data = {}
 admin_filter = filters.user(ADMIN)
 
 def get_video_metadata(file_path):
-    """Extrait dynamiquement la durée et les dimensions d'une vidéo via Hachoir."""
-    duration = 0
-    width = 0
-    height = 0
+    """Extrait la durée et les dimensions d'une vidéo via Hachoir."""
+    duration, width, height = 0, 0, 0
     try:
         parser = createParser(file_path)
         if parser:
@@ -40,19 +42,18 @@ def get_video_metadata(file_path):
                     if metadata.has("height"):
                         height = int(metadata.get("height"))
     except Exception as e:
-        print(f"Erreur d'extraction des métadonnées Hachoir : {e}")
+        print(f"Erreur Hachoir : {e}")
     return duration, width, height
 
-# Fonction d'affichage de la barre de progression
 async def progress_bar(current, total, reply_msg, text, start_time):
+    """Gère l'affichage dynamique de la progression."""
     now = time.time()
     diff = now - start_time
-    if round(diff % 4.00) == 0 or current == total: # Mise à jour toutes les 4 secondes
+    if round(diff % 4.00) == 0 or current == total:
         percentage = current * 100 / total
         speed = current / diff if diff > 0 else 0
         time_to_completion = round((total - current) / speed) if speed > 0 else 0
         
-        # Formatage visuel [██░░░░░░░░]
         progress = math.floor(percentage / 10)
         bar = "█" * progress + "░" * (10 - progress)
         
@@ -104,76 +105,69 @@ async def start_download_upload(client, callback_query):
     user_id = callback_query.from_user.id
     if user_id not in user_data: return
         
+    # Correction du bug de déballage des variables
     data = callback_query.data.split("|")
-    upload_type, new_name = data[0], data[1]
-    file_info = user_data[user_id]
+    upload_type = data[0]
+    new_name = data[1]
     
+    file_info = user_data[user_id]
     msg = await callback_query.message.edit("⚡ **Initialisation...**")
     start_time = time.time()
     
-    # 1. Téléchargement avec barre de progression
+    # 1. Téléchargement dans le dossier personnalisé
+    custom_download_path = os.path.join(DOWNLOAD_DIR, file_info["original_name"])
     download_path = await client.download_media(
         message=file_info["file_id"],
+        file_name=custom_download_path,
         progress=progress_bar,
         progress_args=(msg, "📥 **Téléchargement depuis Telegram...**", start_time)
     )
     
     if not download_path:
-        await msg.edit("❌ **Échec du téléchargement du média.**")
+        await msg.edit("❌ **Échec du téléchargement.**")
         return
 
-    directory = os.path.dirname(download_path)
-    final_path = os.path.join(directory, new_name)
+    final_path = os.path.join(DOWNLOAD_DIR, new_name)
     os.rename(download_path, final_path)
     
-    # 2. Gestion de la miniature depuis Supabase
+    # 2. Récupération de la miniature
     thumb_file = None
     response = supabase.table("bot_settings").select("thumbnail_file_id").eq("user_id", ADMIN).execute()
-    if response.data:
-        thumb_file = await client.download_media(message=response.data[0]["thumbnail_file_id"], file_name="thumb.jpg")
+    if response.data and response.data[0]["thumbnail_file_id"]:
+        thumb_file_path = os.path.join(DOWNLOAD_DIR, "thumb.jpg")
+        thumb_file = await client.download_media(message=response.data[0]["thumbnail_file_id"], file_name=thumb_file_path)
 
-    # 3. Extraction des métadonnées vidéo si le mode vidéo est choisi
+    # 3. Extraction Hachoir pour le mode vidéo
     duration, width, height = 0, 0, 0
     if upload_type == "upload_video":
-        await msg.edit("⚙️ **Extraction des métadonnées vidéo (Hachoir)...**")
+        await msg.edit("⚙️ **Extraction des métadonnées (Hachoir)...**")
         duration, width, height = get_video_metadata(final_path)
 
-    # 4. Téléversement avec barre de progression
+    # 4. Envoi
     await msg.edit("⚡ **Préparation du téléversement...**")
     start_time = time.time()
     
     try:
         if upload_type == "upload_video":
             await client.send_video(
-                chat_id=ADMIN,
-                video=final_path,
-                caption=f"✅ `{new_name}`",
-                thumb=thumb_file,
-                duration=duration,
-                width=width,
-                height=height,
-                supports_streaming=True,  # Active le lecteur de streaming natif
-                progress=progress_bar,
-                progress_args=(msg, "📤 **Envoi de la vidéo sur Telegram...**", start_time)
+                chat_id=ADMIN, video=final_path, caption=f"✅ `{new_name}`", thumb=thumb_file,
+                duration=duration, width=width, height=height, supports_streaming=True,
+                progress=progress_bar, progress_args=(msg, "📤 **Envoi de la vidéo sur Telegram...**", start_time)
             )
         else:
             await client.send_document(
-                chat_id=ADMIN,
-                document=final_path,
-                caption=f"✅ `{new_name}`",
-                thumb=thumb_file,
-                progress=progress_bar,
-                progress_args=(msg, "📤 **Envoi du fichier sur Telegram...**", start_time)
+                chat_id=ADMIN, document=final_path, caption=f"✅ `{new_name}`", thumb=thumb_file,
+                progress=progress_bar, progress_args=(msg, "📤 **Envoi du fichier sur Telegram...**", start_time)
             )
         await msg.delete()
     except Exception as e:
-        await msg.edit(f"❌ Erreur lors du téléversement : {str(e)}")
+        await msg.edit(f"❌ Erreur : {str(e)}")
     finally:
-        # Nettoyage strict des fichiers temporaires pour économiser l'espace Render
+        # Nettoyage strict
         if os.path.exists(final_path): os.remove(final_path)
         if thumb_file and os.path.exists(thumb_file): os.remove(thumb_file)
         if user_id in user_data: del user_data[user_id]
 
 if __name__ == "__main__":
-    print("Bot Renamer Pro actif !")
+    print("Bot Renamer Pro prêt pour Render !")
     bot.run()
