@@ -1,10 +1,9 @@
-FROM python:3.10-slim-buster
+# Utilisation d'une version récente et maintenue de Debian (Bookworm)
+FROM python:3.10-slim-bookworm
 
-# Installation des dépendances système indispensables (FFmpeg et outils de compression)
+# Installation de FFmpeg de manière stable et propre
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    curl \
-    xz-utils \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
