@@ -1,6 +1,6 @@
 services:
   - type: worker                     # Background Worker = toujours actif
-    name: rename-bot-2gb
+    name: Rename-BOT-2GB
     runtime: python
     plan: free                       # ou "starter" pour 512 MB RAM
     buildCommand: pip install -r requirements.txt
