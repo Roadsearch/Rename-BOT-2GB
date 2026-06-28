@@ -9,7 +9,6 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from supabase import create_client, Client as SupabaseClient
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
-# CORRECTIF HACHOIR : Module de configuration mis à jour
 from hachoir.core import config
 
 # Configuration des dossiers
@@ -18,7 +17,7 @@ DEFAULT_THUMBS_DIR = "./default_thumbs"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(DEFAULT_THUMBS_DIR, exist_ok=True)
 
-# CORRECTIF HACHOIR : Remplacement pour compatibilité Render
+# Silence Hachoir pour éviter de polluer les logs Render
 config.quiet = True 
 
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # Limite de 2 Go
@@ -33,7 +32,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", ADMIN))
 START_PIC = os.environ.get("START_PIC", "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500")
 
-# --- CLIENT OPTIMISÉ POUR LA VITESSE ---
+# --- INSTANCIATION DES CLIENTS ---
 bot = Client(
     "AdvancedRenamer",
     api_id=API_ID,
@@ -42,14 +41,13 @@ bot = Client(
     workers=24                        # Traitement parallèle des requêtes réseau
 )
 
-# Connexion stable à Supabase
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 user_data = {}
 task_queue = asyncio.Queue()
 is_processing = False
 
-# Dictionnaire global pour sécuriser le rafraîchissement des barres de progression
+# Dictionnaire global pour sécuriser le rafraîchissement (Anti-Flood strict)
 last_update_times = {}
 
 # --- UTILS & METADONNÉES ---
@@ -73,15 +71,12 @@ async def progress_bar(current, total, reply_msg, text, start_time, mode="downlo
         
     now = time.time()
     msg_id = reply_msg.id
-    
-    # Récupérer le dernier moment où ce message a été modifié
     last_update = last_update_times.get(msg_id, 0)
     
-    # NE METTRE À JOUR que si 3.5 secondes se sont écoulées OU si le fichier est complètement fini
+    # Limitation stricte à 3.5s par rafraîchissement (sauf si fini à 100%)
     if (now - last_update) < 3.5 and current != total:
         return
 
-    # Enregistrer le temps actuel pour ce message
     last_update_times[msg_id] = now
     
     diff = now - start_time
@@ -123,12 +118,11 @@ async def progress_bar(current, total, reply_msg, text, start_time, mode="downlo
     except: 
         pass
         
-    # Nettoyage à la fin
     if current == total and msg_id in last_update_times:
         try: del last_update_times[msg_id]
         except: pass
 
-# --- COMMANDES CLASSIQUES (FRANÇAIS) ---
+# --- COMMANDES EN FRANÇAIS ---
 @bot.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     buttons = [
@@ -384,7 +378,7 @@ async def process_queue(client):
             start_time = time.time()
             custom_download_path = os.path.join(DOWNLOAD_DIR, file_info["original_name"])
             
-            # Téléchargement
+            # Étape 1 & 2 : Téléchargement (Style 1)
             download_path = await client.download_media(
                 message=file_info["file_id"], file_name=custom_download_path,
                 progress=lambda c, t: progress_bar(c, t, msg, "🚀 ⚡ **Téléchargement en cours...** ⚡", start_time, mode="download")
@@ -428,7 +422,7 @@ async def process_queue(client):
                     f"⏱️ **Durée :** {duration_str}"
                 )
 
-            # Envoi
+            # Étape 3 : Envoi (Style 2)
             start_upload_time = time.time()
             target_chat = dump_target if dump_target else user_id
             
