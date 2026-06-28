@@ -2,18 +2,19 @@ import os
 import sys
 import time
 import math
-import random
 import asyncio
 import logging
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import UserNotParticipant
-from supabase import create_client, Client as SupabaseClient
+from pyrogram.methods.utilities.idle import idle
+from pyrogram.errors import UserNotParticipant, FloodWait
+from supabase import create_async_client, AsyncClient as SupabaseAsyncClient
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
-from hachoir.core import config
+from hachoir.core import config as hachoir_config
+from config import Config, Script
 
-# --- CONFIGURATION & LOGS ---
+# --- CONFIGURATION INITIALE & LOGS ---
 logging.basicConfig(
     level=logging.INFO, 
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -21,76 +22,118 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DOWNLOAD_DIR = "./downloads"
-DEFAULT_THUMBS_DIR = "./default_thumbs"
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-os.makedirs(DEFAULT_THUMBS_DIR, exist_ok=True)
+os.makedirs(Config.DOWNLOAD_DIR, exist_ok=True)
+hachoir_config.quiet = True
 
-config.quiet = True 
-MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2 Go
+# --- INITIALISATION DES CLIENTS GLOBAUX ---
+bot = Client("RenameBot", api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=Config.BOT_TOKEN, workers=24)
+supabase: SupabaseAsyncClient = None
 
-# --- VARIABLES D'ENVIRONNEMENT ---
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN = int(os.environ.get("ADMIN", 0))
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
-
-# Nouveautés : Force Sub
-FSUB_CHANNEL_1 = os.environ.get("FSUB_CHANNEL_1", "") # ID ou Username du canal 1 (ex: -100123456789)
-FSUB_CHANNEL_2 = os.environ.get("FSUB_CHANNEL_2", "")
-FSUB_LINK_1 = os.environ.get("FSUB_LINK_1", "https://t.me/TonCanal1")
-FSUB_LINK_2 = os.environ.get("FSUB_LINK_2", "https://t.me/TonCanal2")
-
-START_PIC = os.environ.get("START_PIC", "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500")
-
-# --- INITIALISATION ---
-bot = Client("AdvancedRenamer", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=24)
-supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# Variables globales
+# Gestionnaires d'état en mémoire vive
 user_data = {}
 cancelled_tasks = set()
 task_queue = asyncio.Queue()
 is_processing = False
 last_update_times = {}
 
-# --- FONCTION FORCE SUB (ABONNEMENT OBLIGATOIRE) ---
+# --- FILTRES & SÉCURITÉ ---
+def is_admin_filter(filter, client, message):
+    return message.from_user and message.from_user.id in Config.ADMIN
+
+admin_filter = filters.create(is_admin_filter)
+
 async def check_fsub(client, message):
+    if not Config.FORCE_SUB: return True
     user_id = message.from_user.id
-    if user_id == ADMIN:
-        return True
-        
-    not_joined = []
-    if FSUB_CHANNEL_1:
-        try:
-            await client.get_chat_member(FSUB_CHANNEL_1, user_id)
-        except UserNotParticipant:
-            not_joined.append((FSUB_LINK_1, "🔺 CANAL DE MISES A JOURS 1 🔺"))
-        except Exception: pass
-
-    if FSUB_CHANNEL_2:
-        try:
-            await client.get_chat_member(FSUB_CHANNEL_2, user_id)
-        except UserNotParticipant:
-            not_joined.append((FSUB_LINK_2, "🔺 CANAL DE MISES A JOURS 2 🔺"))
-        except Exception: pass
-
-    if not_joined:
-        buttons = [[InlineKeyboardButton(name, url=link)] for link, name in not_joined]
-        text = f"**BONJOUR {message.from_user.first_name},**\n\n**VOUS DEVEZ REJOINDRE MON CANAL POUR M'UTILISER.**\n\n**VEUILLEZ REJOINDRE LE CANAL.**"
-        await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-        return False
-    return True
-
-# --- UTILITAIRES ---
-async def register_user(user_id):
-    """Enregistre l'utilisateur en base de données pour les statistiques et le broadcast"""
+    if user_id in Config.ADMIN: return True
     try:
-        await asyncio.to_thread(lambda: supabase.table("users").upsert({"user_id": user_id}).execute())
+        await client.get_chat_member(Config.FORCE_SUB, user_id)
+        return True
+    except UserNotParticipant:
+        btn = [[InlineKeyboardButton("🔺 Rejoindre le Canal 🔺", url=f"https://t.me/{Config.FORCE_SUB.replace('@', '')}")]]
+        await message.reply_text("<b>Accès Refusé !</b>\n\nVous devez rejoindre notre canal pour utiliser ce bot.", reply_markup=InlineKeyboardMarkup(btn))
+        return False
+    except Exception:
+        return True
+
+async def check_vip_status(user_id):
+    if user_id in Config.ADMIN: return True
+    try:
+        res = await supabase.table("users").select("is_vip").eq("user_id", user_id).execute()
+        if res.data and len(res.data) > 0:
+            return res.data[0].get("is_vip", False)
     except Exception as e:
-        logger.error(f"Erreur DB User: {e}")
+        logger.error(f"Erreur vérification VIP: {e}")
+    return False
+
+async def register_user(user_id):
+    try:
+        await supabase.table("users").upsert({"user_id": user_id}).execute()
+    except Exception as e:
+        logger.error(f"Erreur DB registration: {e}")
+
+# --- TRANSFERTS SÉCURISÉS & NETTOYAGE ---
+async def safe_telegram_send(client, method, **kwargs):
+    try:
+        return await getattr(client, method)(**kwargs)
+    except FloodWait as e:
+        logger.warning(f"[FLOOD] Attente requise de {e.value}s")
+        await asyncio.sleep(e.value)
+        return await safe_telegram_send(client, method, **kwargs)
+
+def clean_local_storage(user_id, download_path, thumb_path):
+    try:
+        if download_path and os.path.exists(download_path): os.remove(download_path)
+        if thumb_path and os.path.exists(thumb_path) and Config.DOWNLOAD_DIR in thumb_path: os.remove(thumb_path)
+    except Exception as e:
+        logger.error(f"Erreur nettoyage stockage : {e}")
+
+async def send_log_to_channel(client, user_id, first_name, file_name, file_size, action_status, error_msg=None):
+    if not Config.LOG_CHANNEL: return
+    current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+    status_emoji = "✅ SUCCÈS" if action_status == "SUCCESS" else ("✖️ ANNULÉ" if action_status == "CANCELLED" else "🚨 ÉCHEC")
+    details = f"📝 **Nouveau nom :** `{file_name}`" if action_status == "SUCCESS" else (f"❌ **Interrompu par l'utilisateur.**" if action_status == "CANCELLED" else f"⚠️ **Raison :** `{error_msg}`")
+
+    log_text = (
+        f"📋 **RAPPORT DE RENOMMAGE** | {status_emoji}\n\n"
+        f"👤 **Utilisateur :** {first_name} [ `{user_id}` ]\n"
+        f"📅 **Date :** `{current_time}`\n"
+        f"📂 **Fichier :** `{file_name}`\n"
+        f"⚖️ **Taille :** `{file_size / (1024*1024):.2f} MB`\n\n"
+        f"{details}"
+    )
+    try: await client.send_message(chat_id=Config.LOG_CHANNEL, text=log_text)
+    except Exception as e: logger.error(f"Erreur envoi log : {e}")
+
+# --- BARRE DE PROGRESSION ---
+def progress_bar(current, total, reply_msg, text, start_time, mode, user_id):
+    if user_id in cancelled_tasks: raise Exception("USER_CANCELLED_TASK")
+    if not total: return
+    now = time.time()
+    msg_id = reply_msg.id
+    if (now - last_update_times.get(msg_id, 0)) < 3.5 and current != total: return
+    last_update_times[msg_id] = now
+    position = task_queue.qsize()
+    asyncio.get_event_loop().create_task(build_progress_text(current, total, reply_msg, text, start_time, user_id, position))
+
+async def build_progress_text(current, total, reply_msg, text, start_time, user_id, position):
+    now = time.time()
+    diff = now - start_time
+    percentage = current * 100 / total
+    speed = current / diff if diff > 0 else 0
+    eta = round((total - current) / speed) if speed > 0 else 0
+    eta_str = f"{eta}s" if eta < 60 else f"{eta//60}m {eta%60}s"
+    bar = "▣" * math.floor(percentage / 5) + "▢" * (20 - math.floor(percentage / 5))
+    queue_text = f"📍 **Position dans la file :** `En cours...`" if position == 0 else f"⏳ **Fichiers en attente :** `{position}`"
+    progress_template = (
+        f"<b>{text}</b>\n\n<code>{bar}</code>\n\n"
+        f" 🔗 **Size :** {current / (1024*1024):.1f} MB | {total / (1024*1024):.2f} MB\n"
+        f"️ ⏳️ **Done :** {percentage:.2f}%\n"
+        f" 🚀 **Speed :** {speed / (1024 * 1024):.2f} MB/s\n"
+        f"️ ⏰️ **ETA :** {eta_str}\n\n{queue_text}"
+    )
+    try: await reply_msg.edit(text=progress_template, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Cancel Task ✖️", callback_data="cancel_action")]]))
+    except: pass
 
 def get_video_metadata(file_path):
     duration, width, height = 0, 0, 0
@@ -106,263 +149,160 @@ def get_video_metadata(file_path):
     except: pass
     return duration, width, height
 
-async def progress_bar(current, total, reply_msg, text, start_time, mode, user_id):
-    if user_id in cancelled_tasks:
-        raise Exception("USER_CANCELLED_TASK")
-
-    if not total or total == 0: return
-        
-    now = time.time()
-    msg_id = reply_msg.id
-    last_update = last_update_times.get(msg_id, 0)
-    
-    if (now - last_update) < 3.5 and current != total:
-        return
-
-    last_update_times[msg_id] = now
-    diff = now - start_time
-    percentage = current * 100 / total
-    speed = current / diff if diff > 0 else 0
-    eta = round((total - current) / speed) if speed > 0 else 0
-    eta_str = f"{eta}s" if eta < 60 else f"{eta//60}m {eta%60}s"
-    
-    completed_blocks = math.floor(percentage / 5)
-    bar = "■" * completed_blocks + "□" * (20 - completed_blocks)
-    
-    progress_text = (
-        f"{text}\n\n"
-        f"{bar}\n\n"
-        f"🔗 **Size :** {current / (1024*1024):.1f} MB | {total / (1024*1024):.2f} MB\n"
-        f"⏳ **Done :** {percentage:.2f}%\n"
-        f"🚀 **Speed :** {speed / (1024 * 1024):.2f} MB/s\n"
-        f"⏰ **ETA :** {eta_str}"
-    )
-        
-    try:
-        await reply_msg.edit(progress_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Cancel Task ✖️", callback_data="cancel_action")]]))
-    except: pass
-        
-    if current == total and msg_id in last_update_times:
-        last_update_times.pop(msg_id, None)
-
-# --- COMMANDES UTILISATEURS ---
+# --- RECEPTION ET COMMANDES ---
 @bot.on_message(filters.command("start") & filters.private)
-async def start_cmd(client, message):
+async def start(client, message):
     if not await check_fsub(client, message): return
     await register_user(message.from_user.id)
-    
-    buttons = [
-        [InlineKeyboardButton("📢 Updates", url=FSUB_LINK_1), InlineKeyboardButton("💬 Support", url="https://t.me/TonSupport")],
-        [InlineKeyboardButton("🛠️ Help", callback_data="help_panel"), InlineKeyboardButton("💗 About", callback_data="about_panel")],
-        [InlineKeyboardButton("🧑‍💻 Developer 🧑‍💻", url="https://t.me/DevSuayki")]
-    ]
-    welcome_text = f"Hey **{message.from_user.first_name}**\n\nWelcome To Our MadflixBotz Community Bot. Exclusively Work For MadflixBotz !!\n\n4GB Renamer, VIP Experience"
-    try: await message.reply_photo(photo=START_PIC, caption=welcome_text, reply_markup=InlineKeyboardMarkup(buttons))
-    except: await message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(buttons))
+    buttons = [[InlineKeyboardButton("🛠️ Aide", callback_data="help"), InlineKeyboardButton("💗 À Propos", callback_data="about")]]
+    await message.reply_photo(photo=Config.START_PIC, caption=Script.START_TXT.format(message.from_user.first_name), reply_markup=InlineKeyboardMarkup(buttons))
 
-# --- COMMANDES ADMIN ---
-@bot.on_message(filters.command("ping"))
-async def ping_cmd(client, message):
-    start_t = time.time()
-    msg = await message.reply_text("⚡ Ping...")
-    end_t = time.time()
-    await msg.edit(f"**Pong !** 🏓\nLatence : `{round((end_t - start_t) * 1000)}ms`")
-
-@bot.on_message(filters.command("users") & filters.user(ADMIN))
-async def users_cmd(client, message):
-    try:
-        res = await asyncio.to_thread(lambda: supabase.table("users").select("user_id", count="exact").execute())
-        count = res.count if res.count else 0
-        await message.reply_text(f"📊 **Statistiques :**\n\n👥 Nombre total d'utilisateurs : `{count}`")
-    except Exception as e:
-        await message.reply_text(f"❌ Erreur : {e}")
-
-@bot.on_message(filters.command("logs") & filters.user(ADMIN))
-async def logs_cmd(client, message):
-    if os.path.exists("bot.log"):
-        await message.reply_document("bot.log", caption="📝 **Voici les logs récents du bot.**")
-    else:
-        await message.reply_text("❌ **Aucun fichier de log trouvé.**")
-
-@bot.on_message(filters.command("restart") & filters.user(ADMIN))
-async def restart_cmd(client, message):
-    await message.reply_text("🔄 **Redémarrage en cours...**")
-    os.execl(sys.executable, sys.executable, *sys.argv)
-
-@bot.on_message(filters.command("broadcast") & filters.user(ADMIN) & filters.reply)
-async def broadcast_cmd(client, message):
-    msg_to_send = message.reply_to_message
-    res = await asyncio.to_thread(lambda: supabase.table("users").select("user_id").execute())
-    users = res.data if res.data else []
-    
-    success, failed = 0, 0
-    b_msg = await message.reply_text(f"📢 **Diffusion en cours à {len(users)} utilisateurs...**")
-    
-    for user in users:
-        try:
-            await msg_to_send.copy(chat_id=user["user_id"])
-            success += 1
-            await asyncio.sleep(0.1) # Anti-flood
-        except:
-            failed += 1
-            
-    await b_msg.edit(f"✅ **Diffusion Terminée !**\n\n🎯 Réussis : `{success}`\n🚫 Échoués : `{failed}`")
-
-# --- RÉCEPTION MÉDIA (FORMAT IDENTIQUE AUX SCREENS) ---
-@bot.on_message((filters.document | filters.video) & filters.private)
-async def receive_file(client, message):
-    if not await check_fsub(client, message): return
-    await register_user(message.from_user.id)
-    
-    user_id = message.from_user.id
-    file = message.document or message.video
-    
-    if file.file_size > MAX_FILE_SIZE:
-        await message.reply_text("❌ File size exceeds 2GB limit.")
-        return
-        
-    orig_ext = os.path.splitext(file.file_name)[1] if file.file_name else ".mp4"
-    user_data[user_id] = {
-        "file_id": file.file_id,
-        "original_name": file.file_name or f"video_{user_id}.mp4",
-        "orig_ext": orig_ext if orig_ext else ".mp4"
-    }
-    
-    info_text = (
-        f"**QUE SHOUAITEZ-VOUS FAIRE AVEC CE FICHIER?**\n\n"
-        f"**NOM DU FILE :-** `{file.file_name}`\n"
-        f"**TAILLE DU FILE :-** {file.file_size / (1024*1024):.1f} MB\n"
-        f"**ID DC :-** {getattr(file, 'dc_id', '4')}"
-    )
-    buttons = [
-        [InlineKeyboardButton("📝 RENOMMER", callback_data="trigger_rename"), InlineKeyboardButton("✖️ ANNULER", callback_data="cancel_action")]
-    ]
-    await message.reply_text(info_text, reply_markup=InlineKeyboardMarkup(buttons))
-
-# --- CALLBACKS & TEXT INPUT ---
-@bot.on_callback_query(filters.regex("^(trigger_rename|cancel_action|help_panel|about_panel)$"))
-async def handle_callbacks(client, callback_query):
-    user_id = callback_query.from_user.id
-    data = callback_query.data
-    
-    if data == "cancel_action":
+@bot.on_callback_query()
+async def callback_handler(client, query):
+    user_id = query.from_user.id
+    if query.data == "help": await query.message.edit_text(Script.HELP_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Retour", callback_data="back")]]))
+    elif query.data == "about": await query.message.edit_text(Script.ABOUT_TXT, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Retour", callback_data="back")]]))
+    elif query.data == "back": await query.message.edit_text(Script.START_TXT.format(query.from_user.first_name), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🛠️ Aide", callback_data="help"), InlineKeyboardButton("💗 À Propos", callback_data="about")]]))
+    elif query.data == "cancel_action":
         cancelled_tasks.add(user_id)
-        user_data.pop(user_id, None)
-        await callback_query.message.edit("❌ **Task Cancelled Successfully.**")
-    elif data == "trigger_rename":
-        if user_id not in user_data:
-            await callback_query.answer("❌ Session Expired.", show_alert=True)
+        await query.answer("Annulation prise en compte...", show_alert=True)
+    elif query.data.startswith("queue"):
+        if user_id not in user_data or "new_name" not in user_data[user_id]:
+            await query.answer("❌ Erreur de session.", show_alert=True)
             return
-        await callback_query.message.edit("📝 **Please reply to this message with the new filename.**\n\n_Note: Extension is not required._")
-        user_data[user_id]["awaiting_name"] = True
+        upload_type = query.data.split("|")[1]
+        await task_queue.put((query, user_id, upload_type))
+        await query.message.edit(f"⏳ **Ajouté à la file d'attente...**\n📍 Position : `{task_queue.qsize()}`")
 
-@bot.on_message(filters.text & filters.private & ~filters.command(["start", "help", "settings", "viewthumb", "delthumb", "set_caption", "see_caption", "del_caption", "ping", "users", "logs", "restart", "broadcast"]))
-async def process_text_input(client, message):
+@bot.on_message(filters.private & (filters.document | filters.video | filters.audio))
+async def handle_media(client, message):
     if not await check_fsub(client, message): return
     user_id = message.from_user.id
-    
-    if user_id not in user_data or not user_data[user_id].get("awaiting_name"): return
-    
-    input_name = message.text.strip()
-    orig_ext = user_data[user_id]["orig_ext"]
-    final_name = input_name if input_name.endswith(orig_ext) else f"{input_name}{orig_ext}"
-        
-    user_data[user_id]["new_name"] = final_name
-    user_data[user_id]["awaiting_name"] = False
-    
-    text = f"**Select The Output File Type**\n\n**File Name :-** `{final_name}`"
-    buttons = [[InlineKeyboardButton("📁 Document", callback_data="queue|doc"), InlineKeyboardButton("🎥 Video", callback_data="queue|video")]]
-    await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-
-# --- FILE D'ATTENTE & TÉLÉCHARGEMENT ---
-@bot.on_callback_query(filters.regex("^queue"))
-async def add_to_queue(client, callback_query):
-    user_id = callback_query.from_user.id
-    if user_id not in user_data or "new_name" not in user_data[user_id]:
-        await callback_query.answer("❌ Session Error.", show_alert=True)
+    media = getattr(message, message.media.value)
+    is_vip = await check_vip_status(user_id)
+    limit_size = 4000 * 1024 * 1024 if is_vip else 2000 * 1024 * 1024
+    if media.file_size > limit_size:
+        await message.reply_text(f"❌ Fichier trop lourd (Limite : {'4 Go' if is_vip else '2 Go'}).")
         return
+    user_data[user_id] = {"file_id": media.file_id, "original_name": media.file_name or "file", "file_size": media.file_size}
+    await message.reply_text(f"📂 **Fichier détecté :** `{media.file_name}`\n✏️ Envoyez le nouveau nom complet.")
 
-    cancelled_tasks.discard(user_id)
-    await task_queue.put((callback_query, user_id))
-    await callback_query.message.edit(f"⏳ **Added to queue...**\n📍 Position : `{task_queue.qsize()}`")
-    asyncio.create_task(process_queue(client))
+@bot.on_message(filters.private & filters.text & ~filters.command(["start","addvip","delvip","status","set_prefix","set_suffix","set_caption"]))
+async def process_rename(client, message):
+    user_id = message.from_user.id
+    if user_id not in user_data or "file_id" not in user_data[user_id]: return
+    user_data[user_id]["new_name"] = message.text.strip()
+    buttons = [[InlineKeyboardButton("🎥 Vidéo", callback_data="queue|video"), InlineKeyboardButton("📁 Document", callback_data="queue|document")]]
+    await message.reply_text("Choisissez le format d'envoi final :", reply_markup=InlineKeyboardMarkup(buttons))
 
-async def process_queue(client):
+# --- GESTIONNAIRE DE FILE D'ATTENTE UNIQUE ---
+async def queue_processing_core(client):
     global is_processing
-    if is_processing: return
-    is_processing = True
-    
-    while not task_queue.empty():
-        callback_query, user_id = await task_queue.get()
+    while True:
+        query, user_id, upload_type = await task_queue.get()
+        is_processing = True
         final_path, thumb_file = None, None
-        
         try:
-            file_info = user_data.get(user_id)
-            if not file_info or user_id in cancelled_tasks: continue
-            
-            upload_type = callback_query.data.split("|")[1]
-            new_name = file_info["new_name"]
-            
-            msg = await callback_query.message.edit("🚀 ⚡ **Initialisation...** ⚡\n\n□□□□□□□□□□□□□□□□□□□□\n\n🔗 **Size :** 0.0 MB | -- MB")
+            info = user_data.get(user_id)
+            if not info or user_id in cancelled_tasks: continue
+            msg = await query.message.edit("🚀 ⚡ Initialisation... ⚡")
             start_time = time.time()
-            custom_download_path = os.path.join(DOWNLOAD_DIR, file_info["original_name"])
-            
             download_path = await client.download_media(
-                message=file_info["file_id"], file_name=custom_download_path,
-                progress=progress_bar,
-                progress_args=(msg, "🚀 **Downloading Media...** ⚡", start_time, "download", user_id)
+                message=info["file_id"], file_name=os.path.join(Config.DOWNLOAD_DIR, info["original_name"]),
+                progress=progress_bar, progress_args=(msg, "🚀 Downloading...", start_time, "download", user_id)
             )
-            
             if not download_path or user_id in cancelled_tasks: continue
-
-            final_path = os.path.join(DOWNLOAD_DIR, new_name)
+            res = await supabase.table("bot_settings").select("*").eq("user_id", user_id).execute()
+            settings = res.data[0] if res.data else {}
+            prefix = settings.get("prefix", "")
+            suffix = settings.get("suffix", "")
+            file_root, file_ext = os.path.splitext(info["new_name"])
+            processed_name = f"{prefix} {file_root} {suffix}".strip() + file_ext
+            processed_name = " ".join(processed_name.split())
+            final_path = os.path.join(Config.DOWNLOAD_DIR, processed_name)
             os.rename(download_path, final_path)
             
-            # Paramètres et Miniature
-            res = await asyncio.to_thread(lambda: supabase.table("bot_settings").select("*").eq("user_id", user_id).execute())
-            settings = res.data[0] if res.data else {}
-            
             if settings.get("thumbnail_file_id"):
-                thumb_file = await client.download_media(message=settings["thumbnail_file_id"], file_name=os.path.join(DOWNLOAD_DIR, f"t_{user_id}.jpg"))
+                thumb_file = await client.download_media(message=settings["thumbnail_file_id"], file_name=os.path.join(Config.DOWNLOAD_DIR, f"t_{user_id}.jpg"))
             
             duration, width, height = get_video_metadata(final_path)
+            caption = settings.get("custom_caption", f"🎥 Fichier : {processed_name}")
+            if "{filename}" in caption: caption = caption.replace("{filename}", processed_name)
             
-            custom_caption = settings.get("custom_caption", f"🎥 **Fichier :** `{new_name}`")
-            if "{filename}" in custom_caption: custom_caption = custom_caption.replace("{filename}", new_name)
-
-            start_upload_time = time.time()
-            dump_target = settings.get("dump_channel_id", user_id)
+            await msg.edit("🚀 Envoi en cours... ⚡️")
+            send_payload = {"chat_id": user_id, "caption": caption, "thumb": thumb_file, "progress": progress_bar, "progress_args": (msg, "🚀 Uploading...", time.time(), "upload", user_id)}
             
             if upload_type == "video":
-                await client.send_video(
-                    chat_id=dump_target, video=final_path, caption=custom_caption, thumb=thumb_file,
-                    duration=duration, width=width, height=height, supports_streaming=True,
-                    progress=progress_bar, progress_args=(msg, "📤 **Uploading Video...** ⚡", start_upload_time, "upload", user_id)
-                )
+                send_payload.update({"video": final_path, "duration": duration, "width": width, "height": height, "supports_streaming": True})
+                await safe_telegram_send(client, "send_video", **send_payload)
             else:
-                await client.send_document(
-                    chat_id=dump_target, document=final_path, caption=custom_caption, thumb=thumb_file,
-                    progress=progress_bar, progress_args=(msg, "📤 **Uploading Document...** ⚡", start_upload_time, "upload", user_id)
-                )
+                send_payload.update({"document": final_path})
+                await safe_telegram_send(client, "send_document", **send_payload)
             
-            if dump_target != user_id:
-                await client.send_message(chat_id=user_id, text=f"🚀 **File successfully processed and sent to your Dump Channel !**")
             await msg.delete()
-
+            await send_log_to_channel(client, user_id, query.from_user.first_name, processed_name, info["file_size"], "SUCCESS")
         except Exception as e:
-            if "USER_CANCELLED_TASK" not in str(e): logger.error(f"Erreur d'exécution: {e}")
+            logger.error(f"Erreur d'exécution: {e}")
         finally:
-            if final_path and os.path.exists(final_path): os.remove(final_path)
-            if thumb_file and os.path.exists(thumb_file) and DOWNLOAD_DIR in thumb_file: os.remove(thumb_file)
+            clean_local_storage(user_id, final_path, thumb_file)
             user_data.pop(user_id, None)
             cancelled_tasks.discard(user_id)
             task_queue.task_done()
-            
-    is_processing = False
+            is_processing = False
+
+# --- COMMANDES CONFIGURATION ---
+@bot.on_message(filters.command("set_prefix") & filters.private)
+async def set_prefix(c, m):
+    if len(m.command) < 2: return await m.reply_text("❌ Usage: /set_prefix [Texte]")
+    await supabase.table("bot_settings").upsert({"user_id": m.from_user.id, "prefix": m.text.split(" ", 1)[1].strip()}).execute()
+    await m.reply_text("✅ Préfixe configuré.")
+
+@bot.on_message(filters.command("set_suffix") & filters.private)
+async def set_suffix(c, m):
+    if len(m.command) < 2: return await m.reply_text("❌ Usage: /set_suffix [Texte]")
+    await supabase.table("bot_settings").upsert({"user_id": m.from_user.id, "suffix": m.text.split(" ", 1)[1].strip()}).execute()
+    await m.reply_text("✅ Suffixe configuré.")
+
+@bot.on_message(filters.command("set_caption") & filters.private)
+async def set_caption(c, m):
+    if len(m.command) < 2: return await m.reply_text("❌ Usage: /set_caption [Texte]")
+    await supabase.table("bot_settings").upsert({"user_id": m.from_user.id, "custom_caption": m.text.split(" ", 1)[1].strip()}).execute()
+    await m.reply_text("✅ Légende configurée.")
+
+@bot.on_message(filters.private & filters.photo)
+async def save_thumb(c, m):
+    await supabase.table("bot_settings").upsert({"user_id": m.from_user.id, "thumbnail_file_id": m.photo.file_id}).execute()
+    await m.reply_text("💾 Miniature sauvegardée.")
+
+# --- MODULE ADMINISTRATEUR ---
+@bot.on_message(filters.command("addvip") & admin_filter)
+async def add_vip(c, m):
+    if len(m.command) < 2: return await m.reply_text("❌ Usage: /addvip [user_id]")
+    await supabase.table("users").upsert({"user_id": int(m.command[1]), "is_vip": True}).execute()
+    await m.reply_text("👑 Utilisateur promu VIP.")
+
+@bot.on_message(filters.command("status") & admin_filter)
+async def status(c, m):
+    res = await supabase.table("users").select("user_id", count="exact").execute()
+    await m.reply_text(f"📊 Membres : {res.count or 0}\n⏳ File : {task_queue.qsize()}")
+
+# --- SERVEUR KEEP-ALIVE ---
+async def start_render_ping_server():
+    from aiohttp import web
+    app = web.Application()
+    app.router.add_get("/", lambda r: web.Response(text="Bot Operational"))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
+
+async def main():
+    global supabase
+    supabase = await create_async_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+    await start_render_ping_server()
+    await bot.start()
+    asyncio.create_task(queue_processing_core(bot))
+    await idle()
+    await bot.stop()
 
 if __name__ == "__main__":
-    import http.server, threading
-    class DummyServer(http.server.SimpleHTTPRequestHandler):
-        def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"Bot Ready")
-    threading.Thread(target=lambda: http.server.HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 10000))), DummyServer).serve_forever(), daemon=True).start()
-    bot.run()
+    bot.run(main())
