@@ -10,7 +10,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from supabase import create_client, Client as SupabaseClient
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
-# CORRECTIF HACHOIR : Importation du module de configuration mis à jour
+# CORRECTIF HACHOIR : Module de configuration mis à jour
 from hachoir.core import config
 
 # Configuration des dossiers
@@ -19,7 +19,7 @@ DEFAULT_THUMBS_DIR = "./default_thumbs"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(DEFAULT_THUMBS_DIR, exist_ok=True)
 
-# CORRECTIF HACHOIR : Remplacement de configureLocale() pour compatibilité Render
+# CORRECTIF HACHOIR : Remplacement pour compatibilité Render
 config.quiet = True 
 
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # Limite de 2 Go
@@ -43,8 +43,7 @@ bot = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=24,                        # Traitement parallèle des requêtes réseau
-    max_concurrent_transfers=4         # Stabilise la bande passante globale de l'instance
+    workers=24                        # Traitement parallèle des requêtes réseau
 )
 
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY, options=httpx_client)
