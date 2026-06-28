@@ -3,7 +3,6 @@ import time
 import math
 import random
 import asyncio
-import httpx
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -34,9 +33,6 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", ADMIN))
 START_PIC = os.environ.get("START_PIC", "https://telegra.ph/file/default_rename_pic.jpg")
 
-# Connexion optimisée à Supabase
-httpx_client = httpx.Client(timeout=30.0, limits=httpx.Limits(max_keepalive_connections=10, max_connections=20))
-
 # --- CLIENT OPTIMISÉ POUR LA VITESSE ---
 bot = Client(
     "AdvancedRenamer",
@@ -46,7 +42,8 @@ bot = Client(
     workers=24                        # Traitement parallèle des requêtes réseau
 )
 
-supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY, options=httpx_client)
+# Connexion stable à Supabase
+supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 user_data = {}
 task_queue = asyncio.Queue()
@@ -286,7 +283,7 @@ async def handle_callback_menus(client, callback_query):
             "⦿ `/del_caption` - Supprimer votre légende\n\n"
             "⦿ Envoie-moi une photo directement pour l'ajouter en couverture (Thumbnail).\n"
             "⦿ `/viewthumb` - Afficher votre couverture actuelle\n"
-            "⦿ `/delthumb` - Supprimer votre couverture", reply_markup=InlineKeyboardMarkup(buttons)
+            "⦿ `/delthumb` - Supprimer votre couverture Proprement.", reply_markup=InlineKeyboardMarkup(buttons)
         )
     elif data == "about_panel":
         buttons = [[InlineKeyboardButton("🔙 Retour", callback_data="back_start")]]
