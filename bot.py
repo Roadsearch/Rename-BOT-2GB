@@ -3,6 +3,7 @@ import time
 import math
 import random
 import asyncio
+import httpx
 from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -17,7 +18,7 @@ DEFAULT_THUMBS_DIR = "./default_thumbs"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(DEFAULT_THUMBS_DIR, exist_ok=True)
 
-# Silence Hachoir pour éviter de polluer les logs Render
+# Désactive les logs verbeux de Hachoir pour éviter de saturer Render
 config.quiet = True 
 
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # Limite de 2 Go
@@ -32,22 +33,24 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", ADMIN))
 START_PIC = os.environ.get("START_PIC", "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500")
 
-# --- INSTANCIATION DES CLIENTS ---
+# --- INITIALISATION DES CLIENTS (CORRIGÉ POUR HTTPX/SUPABASE) ---
 bot = Client(
     "AdvancedRenamer",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=24                        # Traitement parallèle des requêtes réseau
+    workers=24  # Accélération des requêtes réseau en parallèle
 )
 
-supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Correction majeure : Injection propre du client httpx compatible
+with httpx.Client(timeout=30.0) as client:
+    supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 user_data = {}
 task_queue = asyncio.Queue()
 is_processing = False
 
-# Dictionnaire global pour sécuriser le rafraîchissement (Anti-Flood strict)
+# Dictionnaire global pour un anti-flood strict par ID de message
 last_update_times = {}
 
 # --- UTILS & METADONNÉES ---
@@ -73,7 +76,7 @@ async def progress_bar(current, total, reply_msg, text, start_time, mode="downlo
     msg_id = reply_msg.id
     last_update = last_update_times.get(msg_id, 0)
     
-    # Limitation stricte à 3.5s par rafraîchissement (sauf si fini à 100%)
+    # Limitation temporelle : rafraîchissement toutes les 3.5s maximum (sauf si complété)
     if (now - last_update) < 3.5 and current != total:
         return
 
@@ -92,10 +95,10 @@ async def progress_bar(current, total, reply_msg, text, start_time, mode="downlo
         progress_text = (
             f"{text}\n\n"
             f"{bar}\n\n"
-            f" 🔗 **Taille :** {current / (1024*1024):.1f} MB | {total / (1024*1024):.1f} MB\n"
-            f"️ ⏳️ **Fait :** {percentage:.2f}%\n"
-            f" 🚀 **Vitesse :** {speed / (1024 * 1024):.2f} MB/s\n"
-            f"️ ⏰️ **Temps restant :** {eta_str}"
+            f" 🔗 **Size :** {current / (1024*1024):.1f} MB | {total / (1024*1024):.1f} MB\n"
+            f"️ ⏳️ **Done :** {percentage:.2f}%\n"
+            f" 🚀 **Speed :** {speed / (1024 * 1024):.2f} MB/s\n"
+            f"️ ⏰️ **ETA :** {eta_str}"
         )
     else:
         completed_blocks = math.floor(percentage / 6)
@@ -104,16 +107,16 @@ async def progress_bar(current, total, reply_msg, text, start_time, mode="downlo
         progress_text = (
             f"{text}\n\n"
             f"|{bar}| {percentage:.2f}%\n"
-            f"📦 **Taille :** {current / (1024*1024):.1f} / {total / (1024*1024):.1f} Mo\n"
-            f"⏳️ **Fait :** {percentage:.2f}%\n"
-            f"🚀 **Vitesse :** {speed / (1024 * 1024):.2f} Mo/s\n"
-            f"⏳ **Restant :** {eta_str}"
+            f"📦 **Size :** {current / (1024*1024):.1f} / {total / (1024*1024):.1f} Mo\n"
+            f"⏳️ **Done :** {percentage:.2f}%\n"
+            f"🚀 **Speed :** {speed / (1024 * 1024):.2f} Mo/s\n"
+            f"⏳ **ETA :** {eta_str}"
         )
         
     try:
         await reply_msg.edit(
             progress_text,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Annuler la tâche ✖️", callback_data="cancel_action")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Cancel Task ✖️", callback_data="cancel_action")]])
         )
     except: 
         pass
@@ -122,43 +125,67 @@ async def progress_bar(current, total, reply_msg, text, start_time, mode="downlo
         try: del last_update_times[msg_id]
         except: pass
 
-# --- COMMANDES EN FRANÇAIS ---
+# --- COMMANDES PRINCIPALES ---
 @bot.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     buttons = [
-        [InlineKeyboardButton("📢 Canaux", url="https://t.me/MonCanalUpdates"), InlineKeyboardButton("💬 Support", url="https://t.me/MonContactSupport")],
-        [InlineKeyboardButton("🛠️ Aide", callback_data="help_panel"), InlineKeyboardButton("💗 À propos", callback_data="about_panel")],
-        [InlineKeyboardButton("🧑‍💻 Développeur 🧑‍💻", url="https://t.me/DevSuayki")]
+        [InlineKeyboardButton("📢 Updates", url="https://t.me/MonCanalUpdates"), InlineKeyboardButton("💬 Support", url="https://t.me/MonContactSupport")],
+        [InlineKeyboardButton("🛠️ Help", callback_data="help_panel"), InlineKeyboardButton("💗 About", callback_data="about_panel")],
+        [InlineKeyboardButton("🧑‍💻 Developer 🧑‍💻", url="https://t.me/DevSuayki")]
     ]
-    welcome_text = (
-        f"Hey **{message.from_user.first_name}** 👋\n\n"
-        f"Bienvenue dans la communauté MadflixBotz ! Ce bot est exclusivement optimisé pour t'offrir la meilleure expérience de renommage.\n\n"
-        f"⚡ **Caractéristiques de ton compte :**\n"
-        f"• **Statut :** `VIP Expérience 💎`\n"
-        f"• **Limite de taille :** 4 Go Débloqués 📦\n"
-        f"• **Vitesse :** Maximale (Serveur Dédié) 🚀\n\n"
-        f"Envoie-moi simplement n'importe quelle vidéo ou document. Je le renommerai à la vitesse de l'éclair **sans jamais compresser** ni perdre en qualité !"
-    )
+    welcome_text = f"Hey **{message.from_user.first_name}**\n\nWelcome To Our MadflixBotz Community Bot. Exclusively Work For MadflixBotz !!\n\n4GB Renamer, VIP Experience"
     try: await message.reply_photo(photo=START_PIC, caption=welcome_text, reply_markup=InlineKeyboardMarkup(buttons))
     except: await message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(buttons))
 
 @bot.on_message(filters.command("help") & filters.private)
 async def help_cmd(client, message):
     help_text = (
-        "🛠️ **PANNEAU D'AIDE**\n\n"
-        "⦿ `/set_caption` - Définir une légende personnalisée\n"
-        "⦿ `/see_caption` - Voir votre légende actuelle\n"
-        "⦿ `/del_caption` - Supprimer votre légende\n\n"
-        "⦿ Envoie-moi une photo directement pour l'ajouter en couverture (Thumbnail).\n"
-        "⦿ `/viewthumb` - Afficher votre couverture actuelle\n"
-        "⦿ `/delthumb` - Supprimer votre couverture\n\n"
-        "⦿ `/settings` - Ouvrir les paramètres avancés\n"
-        "⦿ `/metadata` - Définir des métadonnées personnalisées\n"
-        "⦿ `/task` - Vérifier l'état de votre clé d'accès (Token)"
+        "⦿ `/set_caption` - Use This Command To Set Your Caption\n"
+        "⦿ `/see_caption` - Use This Command To See Your Caption\n"
+        "⦿ `/del_caption` - Use This Command To Delete Your Caption\n\n"
+        "⦿ Send A Photo To Me To Add Custom Thumbnail\n"
+        "⦿ `/viewthumb` - Use This Command To See Your Thumbnail\n"
+        "⦿ `/delthumb` - Use This Command To Delete Your Thumbnail\n\n"
+        "⦿ `/settings` - Use This Command To Toggle Settings\n"
+        "⦿ `/metadata` - Use This Command To Set Custom Metadata\n"
+        "⦿ `/task` - Use This Command To Verify Your Token"
     )
     await message.reply_text(help_text)
 
-# --- PARAMÈTRES & SUPABASE ---
+# --- CONFIGURATION THUMBNAIL EN DIRECT ---
+@bot.on_message(filters.photo & filters.private)
+async def add_thumbnail_direct(client, message):
+    user_id = message.from_user.id
+    photo_id = message.photo.file_id
+    try:
+        supabase.table("bot_settings").upsert({"user_id": user_id, "thumbnail_file_id": photo_id}).execute()
+        await message.reply_text("✅ **Custom Thumbnail Saved Successfully!**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error saving thumbnail:** {e}")
+
+@bot.on_message(filters.command("viewthumb") & filters.private)
+async def view_thumbnail(client, message):
+    user_id = message.from_user.id
+    try:
+        res = supabase.table("bot_settings").select("thumbnail_file_id").eq("user_id", user_id).execute()
+        thumb_id = res.data[0].get("thumbnail_file_id") if res.data else None
+        if thumb_id:
+            await message.reply_photo(photo=thumb_id, caption="🖼️ **Your Current Thumbnail**")
+        else:
+            await message.reply_text("❌ **You don't have any custom thumbnail set.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:** {e}")
+
+@bot.on_message(filters.command("delthumb") & filters.private)
+async def delete_thumbnail(client, message):
+    user_id = message.from_user.id
+    try:
+        supabase.table("bot_settings").upsert({"user_id": user_id, "thumbnail_file_id": None}).execute()
+        await message.reply_text("🗑️ **Custom Thumbnail Deleted Successfully.**")
+    except Exception as e:
+        await message.reply_text(f"❌ **Error:** {e}")
+
+# --- SETTINGS, CAPTIONS & SUPABASE ---
 @bot.on_message(filters.command("settings") & filters.private)
 async def settings_cmd(client, message):
     user_id = message.from_user.id
@@ -169,14 +196,14 @@ async def settings_cmd(client, message):
     except:
         r_thumb, dump_id = False, None
 
-    status_thumb = "🟢 Activé" if r_thumb else "🔴 Désactivé"
-    status_dump = f"`{dump_id}`" if dump_id else "❌ Aucun"
+    status_thumb = "🟢 Enabled" if r_thumb else "🔴 Disabled"
+    status_dump = f"`{dump_id}`" if dump_id else "❌ None"
 
-    text = f"🛠 **PANNEAU DES PARAMÈTRES**\n\n🔀 **Miniature Aléatoire :** {status_thumb}\n📁 **Canal de Dump :** {status_dump}"
+    text = f"🛠 **SETTINGS PANEL**\n\n🔀 **Random Thumbnail :** {status_thumb}\n📁 **Dump Channel :** {status_dump}"
     buttons = [
-        [InlineKeyboardButton("🔀 Changer Miniature Aléatoire", callback_data="toggle_random_thumb")],
-        [InlineKeyboardButton("📁 Définir le Canal Dump", callback_data="set_dump_channel")],
-        [InlineKeyboardButton("❌ Fermer", callback_data="close_settings")]
+        [InlineKeyboardButton("🔀 Toggle Random Thumbnail", callback_data="toggle_random_thumb")],
+        [InlineKeyboardButton("📁 Set Dump Channel", callback_data="set_dump_channel")],
+        [InlineKeyboardButton("❌ Close", callback_data="close_settings")]
     ]
     await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
@@ -184,22 +211,14 @@ async def settings_cmd(client, message):
 async def set_caption_cmd(client, message):
     user_id = message.from_user.id
     if len(message.command) < 2:
-        await message.reply_text(
-            "❌ **Format incorrect !**\n\n"
-            "Veuillez entrer votre modèle après la commande. Exemple :\n"
-            "`/set_caption 🎬 Ma Vidéo\n\n🎥 Nom : {filename}\n⚙️ Qualité : {quality}`\n\n"
-            "**Balises disponibles :**\n"
-            "• `{filename}` : Remplacé par le nouveau nom du fichier.\n"
-            "• `{quality}` : Remplacé par la résolution détectée (ex: 720p)."
-        )
+        await message.reply_text("❌ **Format incorrect!** Use: `/set_caption your text {filename}`")
         return
     caption_text = message.text.split(None, 1)[1]
     try:
         supabase.table("bot_settings").upsert({"user_id": user_id, "custom_caption": caption_text}).execute()
-        preview = caption_text.replace("{filename}", "Mon_Film_Anime.mp4").replace("{quality}", "720p")
-        await message.reply_text(f"✅ **Légende enregistrée avec succès !**\n\n📢 **Aperçu du rendu :**\n---\n{preview}\n---")
+        await message.reply_text("✅ **Caption Saved Successfully!**")
     except Exception as e:
-        await message.reply_text(f"❌ **Erreur de sauvegarde :** {e}")
+        await message.reply_text(f"❌ **Error:** {e}")
 
 @bot.on_message(filters.command("see_caption") & filters.private)
 async def see_caption_cmd(client, message):
@@ -207,26 +226,26 @@ async def see_caption_cmd(client, message):
     try:
         res = supabase.table("bot_settings").select("custom_caption").eq("user_id", user_id).execute()
         current = res.data[0].get("custom_caption") if res.data else None
-        if current: await message.reply_text(f"📢 **Votre modèle de légende actuel :**\n\n`{current}`")
-        else: await message.reply_text("❌ **Aucune légende personnalisée.** Le bot utilise le modèle par défaut.")
-    except Exception as e: await message.reply_text(f"❌ **Erreur :** {e}")
+        if current: await message.reply_text(f"📢 **Current Caption:**\n\n`{current}`")
+        else: await message.reply_text("❌ **No custom caption set.**")
+    except Exception as e: await message.reply_text(f"❌ **Error:** {e}")
 
 @bot.on_message(filters.command("del_caption") & filters.private)
 async def del_caption_cmd(client, message):
     user_id = message.from_user.id
     try:
         supabase.table("bot_settings").upsert({"user_id": user_id, "custom_caption": None}).execute()
-        await message.reply_text("🗑️ **Légende personnalisée supprimée.** Retour au modèle automatique.")
-    except Exception as e: await message.reply_text(f"❌ **Erreur :** {e}")
+        await message.reply_text("🗑️ **Custom Caption Deleted.**")
+    except Exception as e: await message.reply_text(f"❌ **Error:** {e}")
 
-# --- RECEPTION MÉDIAS ---
+# --- RÉCEPTION ET ANALYSE DU MÉDIA ---
 @bot.on_message((filters.document | filters.video) & filters.private)
 async def receive_file(client, message):
     user_id = message.from_user.id
     file = message.document or message.video
     
     if file.file_size > MAX_FILE_SIZE:
-        await message.reply_text("❌ La taille du fichier dépasse la limite autorisée de 2 Go.")
+        await message.reply_text("❌ File size exceeds 2GB limit.")
         return
         
     orig_ext = os.path.splitext(file.file_name)[1] if file.file_name else ".mp4"
@@ -241,25 +260,25 @@ async def receive_file(client, message):
     }
     
     info_text = (
-        f"📂 **Informations Média :**\n\n"
-        f"♢ **Nom Original :** `{file.file_name}`\n"
-        f"♢ **Poids :** {file.file_size / (1024*1024):.2f} MB\n"
-        f"♢ **Extension :** {orig_ext.replace('.', '')}\n"
+        f"📂 **Media Info :**\n\n"
+        f"♢ **File Name :** `{file.file_name}`\n"
+        f"♢ **File Size :** {file.file_size / (1024*1024):.2f} MB\n"
+        f"♢ **File Extension :** {orig_ext.replace('.', '')}\n"
         f"♢ **Mime Type :** {file.mime_type}\n"
         f"♢ **DC ID :** {getattr(file, 'dc_id', '4')}\n\n"
-        f"**Veuillez entrer le nouveau nom du fichier...**\n\n"
-        f"_Note : L'extension n'est pas requise._"
+        f"**Please Enter The New Filename...**\n\n"
+        f"Note:- Extension Not Required"
     )
     
     await message.reply_text(
         info_text, 
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📝 Renommer", callback_data="trigger_rename"), 
-             InlineKeyboardButton("⏳ Annuler", callback_data="cancel_action")]
+            [InlineKeyboardButton("📝 Rename", callback_data="trigger_rename"), 
+             InlineKeyboardButton("⏳ Cancel", callback_data="cancel_action")]
         ])
     )
 
-# --- MENUS CALLBACKS ---
+# --- INTERACTION CALLBACKS ---
 @bot.on_callback_query(filters.regex("^(trigger_rename|cancel_action|toggle_random_thumb|set_dump_channel|close_settings|help_panel|about_panel|back_start)$"))
 async def handle_callback_menus(client, callback_query):
     user_id = callback_query.from_user.id
@@ -267,12 +286,12 @@ async def handle_callback_menus(client, callback_query):
     
     if data == "cancel_action":
         if user_id in user_data: del user_data[user_id]
-        await callback_query.message.edit("❌ **Tâche annulée avec succès.**")
+        await callback_query.message.edit("❌ **Task Cancelled Successfully.**")
     elif data == "trigger_rename":
         if user_id not in user_data:
-            await callback_query.answer("❌ Session expirée.", show_alert=True)
+            await callback_query.answer("❌ Session Expired.", show_alert=True)
             return
-        await callback_query.message.edit("📝 **Veuillez répondre à ce message avec le nouveau nom.**\n\n_Note : L'extension est gérée automatiquement._")
+        await callback_query.message.edit("📝 **Please reply to this message with the new filename.**\n\n_Note: Extension is not required._")
         user_data[user_id]["awaiting_name"] = True
     elif data == "close_settings":
         await callback_query.message.delete()
@@ -281,37 +300,22 @@ async def handle_callback_menus(client, callback_query):
             res = supabase.table("bot_settings").select("random_thumb_enabled").eq("user_id", user_id).execute()
             current = res.data[0].get("random_thumb_enabled", False) if res.data else False
             supabase.table("bot_settings").upsert({"user_id": user_id, "random_thumb_enabled": not current}).execute()
-            await callback_query.answer(f"Miniature aléatoire : {'Désactivée' if current else 'Activée'}", show_alert=True)
+            await callback_query.answer(f"Random Thumbnail : {'Disabled' if current else 'Enabled'}", show_alert=True)
             await settings_cmd(client, callback_query.message)
             await callback_query.message.delete()
         except: pass
     elif data == "set_dump_channel":
-        await callback_query.message.edit("📁 **Envoyez l'ID numérique complet de votre canal Dump maintenant.**")
+        await callback_query.message.edit("📁 **Send your Dump Channel numeric ID now.**")
         user_data[user_id] = {"awaiting_dump_id": True}
     elif data == "help_panel":
-        buttons = [[InlineKeyboardButton("🔙 Retour", callback_data="back_start")]]
-        await callback_query.message.edit_text(
-            "🛠️ **PANNEAU D'AIDE**\n\n"
-            "⦿ `/set_caption` - Définir une légende personnalisée\n"
-            "⦿ `/see_caption` - Voir votre légende actuelle\n"
-            "⦿ `/del_caption` - Supprimer votre légende\n\n"
-            "⦿ Envoie-moi une photo directement pour l'ajouter en couverture (Thumbnail).\n"
-            "⦿ `/viewthumb` - Afficher votre couverture actuelle\n"
-            "⦿ `/delthumb` - Supprimer votre couverture Proprement.", reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        await callback_query.message.edit_text("🛠️ **Help panel instructions loaded.** Use standard renamer rules.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]))
     elif data == "about_panel":
-        buttons = [[InlineKeyboardButton("🔙 Retour", callback_data="back_start")]]
-        await callback_query.message.edit_text(
-            "💗 **À PROPOS**\n\n"
-            "Ce bot a été conçu pour automatiser et simplifier le renommage de fichiers volumineux tout en préservant la qualité d'origine.\n\n"
-            "• **Version :** `2.5.0 (2026)`\n"
-            "• **Framework :** Pyrogram Asyncio\n"
-            "• **Base de données :** Supabase SQL", reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        await callback_query.message.edit_text("💗 **About :** 4GB Premium Renamer Core Structure.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="back_start")]]))
     elif data == "back_start":
         await callback_query.message.delete()
         await start_cmd(client, callback_query.message)
 
+# --- RÉCEPTION TEXTE ---
 @bot.on_message(filters.text & ~filters.command(["start", "help", "settings", "viewthumb", "delthumb", "set_caption", "see_caption", "del_caption", "metadata", "task"]) & filters.private)
 async def process_text_input(client, message):
     user_id = message.from_user.id
@@ -320,9 +324,9 @@ async def process_text_input(client, message):
         try:
             dump_id = int(message.text.strip())
             supabase.table("bot_settings").upsert({"user_id": user_id, "dump_channel_id": dump_id}).execute()
-            await message.reply_text(f"✅ **Canal de Dump associé avec succès !** ID : `{dump_id}`")
+            await message.reply_text(f"✅ **Dump Channel Linked Successfully!** ID: `{dump_id}`")
         except:
-            await message.reply_text("❌ Format d'ID invalide.")
+            await message.reply_text("❌ Invalid ID format.")
         del user_data[user_id]
         return
 
@@ -338,20 +342,20 @@ async def process_text_input(client, message):
     
     buttons = [[
         InlineKeyboardButton("📁 Document", callback_data=f"queue|doc"),
-        InlineKeyboardButton("🎥 Vidéo", callback_data=f"queue|video")
+        InlineKeyboardButton("🎥 Video", callback_data=f"queue|video")
     ]]
-    await message.reply_text(f"**Sélectionnez le type de fichier de sortie**\n\n**Nom final :** `{final_name}`", reply_markup=InlineKeyboardMarkup(buttons))
+    await message.reply_text(f"**Select The Output File Type**\n\n**File Name :** `{final_name}`", reply_markup=InlineKeyboardMarkup(buttons))
 
-# --- FILE D'ATTENTE & PROCESSUS ASYNC ---
+# --- FILES D'ATTENTE ET ENVOI ---
 @bot.on_callback_query(filters.regex("^queue"))
 async def add_to_queue(client, callback_query):
     user_id = callback_query.from_user.id
     if user_id not in user_data or "new_name" not in user_data[user_id]:
-        await callback_query.answer("❌ Erreur de session.", show_alert=True)
+        await callback_query.answer("❌ Session Error.", show_alert=True)
         return
 
     await task_queue.put((callback_query, user_id))
-    await callback_query.message.edit(f"⏳ **Ajouté à la file d'attente...**\n📍 Position Globale : `{task_queue.qsize()}`")
+    await callback_query.message.edit(f"⏳ **Added to queue...**\n📍 Global Position : `{task_queue.qsize()}`")
     asyncio.create_task(process_queue(client))
 
 async def process_queue(client):
@@ -371,7 +375,7 @@ async def process_queue(client):
             msg = await callback_query.message.edit(
                 "🚀 ⚡ **Initialisation...** ⚡\n\n"
                 "▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢▢\n\n"
-                " 🔗 **Taille :** 0.0 MB | -- MB"
+                " 🔗 **Size :** 0.0 MB | -- MB"
             )
             await asyncio.sleep(1)
             
@@ -381,7 +385,7 @@ async def process_queue(client):
             # Étape 1 & 2 : Téléchargement (Style 1)
             download_path = await client.download_media(
                 message=file_info["file_id"], file_name=custom_download_path,
-                progress=lambda c, t: progress_bar(c, t, msg, "🚀 ⚡ **Téléchargement en cours...** ⚡", start_time, mode="download")
+                progress=lambda c, t: progress_bar(c, t, msg, "🚀 ⚡ **Downloading Media...** ⚡", start_time, mode="download")
             )
             
             if not download_path: continue
@@ -389,6 +393,7 @@ async def process_queue(client):
             final_path = os.path.join(DOWNLOAD_DIR, new_name)
             os.rename(download_path, final_path)
             
+            # Gestion Thumbnail
             thumb_file = None
             try:
                 res = supabase.table("bot_settings").select("thumbnail_file_id", "random_thumb_enabled", "dump_channel_id", "custom_caption").eq("user_id", user_id).execute()
@@ -405,8 +410,8 @@ async def process_queue(client):
 
             duration, width, height = get_video_metadata(final_path)
             file_size_mo = os.path.getsize(final_path) / (1024 * 1024)
-            detected_quality = f"{height}p" if height > 0 else "Originale"
-            duration_str = f"{duration // 60}m {duration % 60}s" if duration > 0 else "Inconnue"
+            detected_quality = f"{height}p" if height > 0 else "Original"
+            duration_str = f"{duration // 60}m {duration % 60}s" if duration > 0 else "Unknown"
 
             custom_caption = None
             try:
@@ -415,12 +420,7 @@ async def process_queue(client):
             except: pass
 
             if not custom_caption:
-                custom_caption = (
-                    f"🎥 **Fichier :** `{new_name}`\n"
-                    f"⚙️ **Qualité :** {detected_quality}\n"
-                    f"📦 **Poids :** {file_size_mo:.1f} Mo\n"
-                    f"⏱️ **Durée :** {duration_str}"
-                )
+                custom_caption = f"🎥 **Fichier :** `{new_name}`\n⚙️ **Qualité :** {detected_quality}\n📦 **Poids :** {file_size_mo:.1f} Mo\n⏱ **Durée :** {duration_str}"
 
             # Étape 3 : Envoi (Style 2)
             start_upload_time = time.time()
@@ -439,11 +439,10 @@ async def process_queue(client):
                 )
             
             if target_chat != user_id:
-                await client.send_message(chat_id=user_id, text=f"🚀 **Fichier traité et envoyé au canal Dump !**\n📦 Nom : `{new_name}`")
+                await client.send_message(chat_id=user_id, text=f"🚀 **File processed and sent to your Dump Channel !**\n📦 Name : `{new_name}`")
 
             await msg.delete()
-        except Exception as e: 
-            print(f"Queue Error : {e}")
+        except Exception as e: print(f"Queue Error : {e}")
         finally:
             if 'final_path' in locals() and os.path.exists(final_path): os.remove(final_path)
             if thumb_file and os.path.exists(thumb_file) and DOWNLOAD_DIR in thumb_file: os.remove(thumb_file)
@@ -454,7 +453,7 @@ async def process_queue(client):
 if __name__ == "__main__":
     import http.server, threading
     class DummyServer(http.server.SimpleHTTPRequestHandler):
-        def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"Bot OK")
+        def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"Bot Running")
     def run_server(): http.server.HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 10000))), DummyServer).serve_forever()
     threading.Thread(target=run_server, daemon=True).start()
     bot.run()
