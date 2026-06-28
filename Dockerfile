@@ -1,21 +1,24 @@
-# Utilisation d'une version récente et maintenue de Debian (Bookworm)
 FROM python:3.10-slim-bookworm
 
-# Installation de FFmpeg de manière stable et propre
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Ajout des outils de compilation nécessaires pour Render
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    build-essential \
+    gcc \
+    python3-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Création du dossier de travail
 WORKDIR /app
 
-# Copie et installation des bibliothèques Python
+# Render va mettre en cache cette couche si requirements.txt ne change pas
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copie du reste du code du bot
 COPY . .
 
-# Commande de démarrage du bot
 CMD ["python", "bot.py"]
