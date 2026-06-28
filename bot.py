@@ -10,14 +10,17 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from supabase import create_client, Client as SupabaseClient
 from hachoir.metadata import extractMetadata
 from hachoir.parser import createParser
-from hachoir.core.cmd_line import configureLocale
+# CORRECTIF HACHOIR : Importation du module de configuration mis à jour
+from hachoir.core import config
 
 # Configuration des dossiers
 DOWNLOAD_DIR = "./downloads"
 DEFAULT_THUMBS_DIR = "./default_thumbs"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(DEFAULT_THUMBS_DIR, exist_ok=True)
-configureLocale() 
+
+# CORRECTIF HACHOIR : Remplacement de configureLocale() pour compatibilité Render
+config.quiet = True 
 
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # Limite de 2 Go
 
@@ -31,17 +34,17 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", ADMIN))
 START_PIC = os.environ.get("START_PIC", "https://telegra.ph/file/default_rename_pic.jpg")
 
-# Optimisation HTTPX pour Supabase
+# Connexion optimisée à Supabase
 httpx_client = httpx.Client(timeout=30.0, limits=httpx.Limits(max_keepalive_connections=10, max_connections=20))
 
-# --- INITIALISATION DU CLIENT OPTIMISÉ POUR LA VITESSE ---
+# --- CLIENT OPTIMISÉ POUR LA VITESSE ---
 bot = Client(
     "AdvancedRenamer",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=24,                        # Augmente le traitement parallèle des requêtes
-    max_concurrent_transfers=4         # Évite la saturation et stabilise la bande passante par fichier
+    workers=24,                        # Traitement parallèle des requêtes réseau
+    max_concurrent_transfers=4         # Stabilise la bande passante globale de l'instance
 )
 
 supabase: SupabaseClient = create_client(SUPABASE_URL, SUPABASE_KEY, options=httpx_client)
@@ -50,7 +53,7 @@ user_data = {}
 task_queue = asyncio.Queue()
 is_processing = False
 
-# --- UTILS & CONFIGURATIONS MÉDIAS ---
+# --- UTILS & METADONNÉES ---
 def get_video_metadata(file_path):
     duration, width, height = 0, 0, 0
     try:
@@ -70,7 +73,7 @@ async def progress_bar(current, total, reply_msg, text, start_time, mode="downlo
     now = time.time()
     diff = now - start_time
     
-    # Rafraîchissement strict toutes les 3 secondes pour empêcher Telegram de brider la vitesse (Anti-Flood)
+    # Rafraîchissement toutes les 3 secondes pour contourner le bridage Telegram (Anti-Flood)
     if round(diff % 3.00) == 0 or current == total:
         percentage = current * 100 / total
         speed = current / diff if diff > 0 else 0
@@ -109,7 +112,7 @@ async def progress_bar(current, total, reply_msg, text, start_time, mode="downlo
             )
         except: pass
 
-# --- COMMANDES CLASSIQUES ---
+# --- COMMANDES CLASSIQUES (FRANÇAIS) ---
 @bot.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
     buttons = [
@@ -145,7 +148,7 @@ async def help_cmd(client, message):
     )
     await message.reply_text(help_text)
 
-# --- PANNEAU DE CONFIGURATION ---
+# --- PARAMÈTRES & SUPABASE ---
 @bot.on_message(filters.command("settings") & filters.private)
 async def settings_cmd(client, message):
     user_id = message.from_user.id
@@ -167,7 +170,6 @@ async def settings_cmd(client, message):
     ]
     await message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
-# --- COMMANDES DES LÉGENDES ---
 @bot.on_message(filters.command("set_caption") & filters.private)
 async def set_caption_cmd(client, message):
     user_id = message.from_user.id
@@ -207,7 +209,7 @@ async def del_caption_cmd(client, message):
         await message.reply_text("🗑️ **Légende personnalisée supprimée.** Retour au modèle automatique.")
     except Exception as e: await message.reply_text(f"❌ **Erreur :** {e}")
 
-# --- RECEPTION MÉDIAS & RENOMMAGE ---
+# --- RECEPTION MÉDIAS ---
 @bot.on_message((filters.document | filters.video) & filters.private)
 async def receive_file(client, message):
     user_id = message.from_user.id
@@ -247,7 +249,7 @@ async def receive_file(client, message):
         ])
     )
 
-# --- MENUS DE NAVIGATION & LOGIQUE CALLBACKS ---
+# --- MENUS CALLBACKS ---
 @bot.on_callback_query(filters.regex("^(trigger_rename|cancel_action|toggle_random_thumb|set_dump_channel|close_settings|help_panel|about_panel|back_start)$"))
 async def handle_callback_menus(client, callback_query):
     user_id = callback_query.from_user.id
@@ -291,7 +293,7 @@ async def handle_callback_menus(client, callback_query):
         buttons = [[InlineKeyboardButton("🔙 Retour", callback_data="back_start")]]
         await callback_query.message.edit_text(
             "💗 **À PROPOS**\n\n"
-            "Ce bot a été conçu pour automatiser et simplifier le renommage de fichiers volumineux sur Telegram tout en préservant à 100% les fichiers d'origine.\n\n"
+            "Ce bot a été conçu pour automatiser et simplifier le renommage de fichiers volumineux tout en préservant la qualité d'origine.\n\n"
             "• **Version :** `2.5.0 (2026)`\n"
             "• **Framework :** Pyrogram Asyncio\n"
             "• **Base de données :** Supabase SQL", reply_markup=InlineKeyboardMarkup(buttons)
@@ -330,7 +332,7 @@ async def process_text_input(client, message):
     ]]
     await message.reply_text(f"**Sélectionnez le type de fichier de sortie**\n\n**Nom final :** `{final_name}`", reply_markup=InlineKeyboardMarkup(buttons))
 
-# --- GESTION DE LA FILE D'ATTENTE ET TRAITEMENTS ---
+# --- FILE D'ATTENTE & PROCESSUS ASYNC ---
 @bot.on_callback_query(filters.regex("^queue"))
 async def add_to_queue(client, callback_query):
     user_id = callback_query.from_user.id
@@ -366,7 +368,7 @@ async def process_queue(client):
             start_time = time.time()
             custom_download_path = os.path.join(DOWNLOAD_DIR, file_info["original_name"])
             
-            # 1. Téléchargement ultra-rapide (Mode download)
+            # Téléchargement
             download_path = await client.download_media(
                 message=file_info["file_id"], file_name=custom_download_path,
                 progress=lambda c, t: progress_bar(c, t, msg, "🚀 ⚡ **Initialisation...** ⚡", start_time, mode="download")
@@ -377,7 +379,6 @@ async def process_queue(client):
             final_path = os.path.join(DOWNLOAD_DIR, new_name)
             os.rename(download_path, final_path)
             
-            # Récupération Miniature / Configuration
             thumb_file = None
             try:
                 res = supabase.table("bot_settings").select("thumbnail_file_id", "random_thumb_enabled", "dump_channel_id", "custom_caption").eq("user_id", user_id).execute()
@@ -392,13 +393,11 @@ async def process_queue(client):
                 dump_target = settings.get("dump_channel_id", user_id)
             except: dump_target = user_id
 
-            # Lecture instantanée des métadonnées d'origine (Sans re-compression)
             duration, width, height = get_video_metadata(final_path)
             file_size_mo = os.path.getsize(final_path) / (1024 * 1024)
             detected_quality = f"{height}p" if height > 0 else "Originale"
             duration_str = f"{duration // 60}m {duration % 60}s" if duration > 0 else "Inconnue"
 
-            # Caption Dynamique
             custom_caption = None
             try:
                 if settings.get("custom_caption"):
@@ -413,7 +412,7 @@ async def process_queue(client):
                     f"⏱️ **Durée :** {duration_str}"
                 )
 
-            # 2. Upload / Envoi stable et rapide (Mode upload)
+            # Envoi
             start_upload_time = time.time()
             target_chat = dump_target if dump_target else user_id
             
@@ -430,7 +429,7 @@ async def process_queue(client):
                 )
             
             if target_chat != user_id:
-                await client.send_message(chat_id=user_id, text=f"🚀 **Fichier traité et envoyé avec succès !**\n📦 Nom : `{new_name}`")
+                await client.send_message(chat_id=user_id, text=f"🚀 **Fichier traité et envoyé au canal Dump !**\n📦 Nom : `{new_name}`")
 
             await msg.delete()
         except Exception as e: 
