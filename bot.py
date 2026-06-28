@@ -172,7 +172,7 @@ async def start_download_upload(client, callback_query):
     final_path = os.path.join(DOWNLOAD_DIR, new_name)
     os.rename(download_path, final_path)
     
-    # 2. Récupération de la miniature Supabase
+    # 2. Récupération de la miniature Supabase (Sécurisée)
     thumb_file = None
     try:
         response = supabase.table("bot_settings").select("thumbnail_file_id").eq("user_id", ADMIN).execute()
@@ -182,7 +182,7 @@ async def start_download_upload(client, callback_query):
                 thumb_file_path = os.path.join(DOWNLOAD_DIR, "thumb.jpg")
                 thumb_file = await client.download_media(message=thumb_id, file_name=thumb_file_path)
     except Exception as e:
-        print(f"Erreur miniature : {e}")
+        print(f"Erreur lors de la récupération de la miniature : {e}")
 
     # 3. Encodage adaptatif de la vidéo
     original_to_delete = None
@@ -200,7 +200,7 @@ async def start_download_upload(client, callback_query):
         
         final_path, target_label = compress_video_adaptive(original_to_delete, compressed_path, orig_height)
         
-        # Nettoyage immédiat du fichier original de 2 Go
+        # Nettoyage immédiat du gros fichier d'origine pour libérer le disque de Render
         if original_to_delete and os.path.exists(original_to_delete) and final_path != original_to_delete:
             os.remove(original_to_delete)
             original_to_delete = None
@@ -211,10 +211,8 @@ async def start_download_upload(client, callback_query):
     await msg.edit("📤 **Téléversement vers Telegram...**")
     start_time = time.time()
     
-    # Calcul de la taille du fichier final pour la légende
     file_size_mo = os.path.getsize(final_path) / (1024 * 1024)
     
-    # Construction de la légende personnalisée
     caption_text = (
         f"🎥 **Fichier :** `{new_name}`\n"
         f"⚙️ **Qualité :** `{target_label}`\n"
