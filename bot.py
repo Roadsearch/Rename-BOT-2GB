@@ -9,7 +9,7 @@ from route import web_server
 import pyromod
 import pyrogram.utils
 
-# Workaround to allow standard channel IDs
+# Solution de contournement pour autoriser les ID de canaux standard
 pyrogram.utils.MIN_CHANNEL_ID = -100999999999999
 
 
@@ -32,25 +32,27 @@ class Bot(Client):
         self.username = me.username
         self.uptime   = Config.BOT_UPTIME
 
-        # Combined Webhook & Render Ping Server Logic
-        if Config.WEBHOOK:
-            app = web.AppRunner(await web_server())
-            await app.setup()
-            # Dynamically grab the port assigned by your cloud provider (Render/Koyeb)
-            port = int(os.environ.get("PORT", 8080))
-            await web.TCPSite(app, "0.0.0.0", port).start()
-            print(f"Web server started on port {port} 🌐")
+        # --- CORRECTION POUR RENDER ---
+        # Ceci démarre le serveur web pour que Render ne tue pas votre bot
+        app = web.AppRunner(await web_server())
+        await app.setup()
+        
+        # Utilisation explicite du port 10000 (ou du PORT de l'environnement Render)
+        port = int(os.environ.get("PORT", 10000))
+        await web.TCPSite(app, "0.0.0.0", port).start()
+        print(f"✅ Serveur web démarré sur le port {port} 🌐")
+        # ------------------------------
 
-        print(f"{me.first_name} Is Started.....✨️")
+        print(f"✨ {me.first_name} a démarré !.....✨️")
 
-        # Notify Admins
+        # Notification aux administrateurs
         for admin_id in Config.ADMIN:
             try:
-                await self.send_message(admin_id, f"**{me.first_name} Is Started...**")
+                await self.send_message(admin_id, f"**{me.first_name} a démarré...**")
             except Exception:
                 pass
 
-        # Send Log to Channel
+        # Envoi du journal (log) au canal
         if Config.LOG_CHANNEL:
             try:
                 curr = datetime.now(timezone("Asia/Kolkata"))
@@ -58,14 +60,14 @@ class Bot(Client):
                 time = curr.strftime('%I:%M:%S %p')
                 await self.send_message(
                     Config.LOG_CHANNEL,
-                    f"**{me.mention} Is Restarted !!**\n\n"
+                    f"**{me.mention} a redémarré !!**\n\n"
                     f"📅 Date : `{date}`\n"
-                    f"⏰ Time : `{time}`\n"
-                    f"🌐 Timezone : `Asia/Kolkata`\n\n"
+                    f"⏰ Heure : `{time}`\n"
+                    f"🌐 Fuseau horaire : `Asia/Kolkata`\n\n"
                     f"🉐 Version : `v{__version__} (Layer {layer})`"
                 )
             except Exception:
-                print("⚠️ Please Make This Bot Admin In Your Log Channel")
+                print("⚠️ Veuillez nommer ce bot Administrateur dans votre canal de journalisation (Log Channel)")
 
 
 if __name__ == "__main__":
