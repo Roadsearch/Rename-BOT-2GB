@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from pytz import timezone
 from pyrogram import Client, __version__
@@ -8,11 +9,11 @@ from route import web_server
 import pyromod
 import pyrogram.utils
 
+# Workaround to allow standard channel IDs
 pyrogram.utils.MIN_CHANNEL_ID = -100999999999999
 
 
 class Bot(Client):
-
     def __init__(self):
         super().__init__(
             name="renamer",
@@ -31,19 +32,25 @@ class Bot(Client):
         self.username = me.username
         self.uptime   = Config.BOT_UPTIME
 
+        # Combined Webhook & Render Ping Server Logic
         if Config.WEBHOOK:
             app = web.AppRunner(await web_server())
             await app.setup()
-            await web.TCPSite(app, "0.0.0.0", 8080).start()
+            # Dynamically grab the port assigned by your cloud provider (Render/Koyeb)
+            port = int(os.environ.get("PORT", 8080))
+            await web.TCPSite(app, "0.0.0.0", port).start()
+            print(f"Web server started on port {port} 🌐")
 
         print(f"{me.first_name} Is Started.....✨️")
 
-        for id in Config.ADMIN:
+        # Notify Admins
+        for admin_id in Config.ADMIN:
             try:
-                await self.send_message(id, f"**{me.first_name} Is Started...**")
-            except:
+                await self.send_message(admin_id, f"**{me.first_name} Is Started...**")
+            except Exception:
                 pass
 
+        # Send Log to Channel
         if Config.LOG_CHANNEL:
             try:
                 curr = datetime.now(timezone("Asia/Kolkata"))
@@ -57,14 +64,9 @@ class Bot(Client):
                     f"🌐 Timezone : `Asia/Kolkata`\n\n"
                     f"🉐 Version : `v{__version__} (Layer {layer})`"
                 )
-            except:
-                print("Please Make This Bot Admin In Your Log Channel")
+            except Exception:
+                print("⚠️ Please Make This Bot Admin In Your Log Channel")
 
 
-Bot().run()
-
-# Jishu Developer — Don't Remove Credit 🥺
-# Telegram Channel @MadflixBotz
-# Backup Channel   @JishuBotz
-# Developer        @JishuDeveloper
-# Contact          @MadflixSupport
+if __name__ == "__main__":
+    Bot().run()
