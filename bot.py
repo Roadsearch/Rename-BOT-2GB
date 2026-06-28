@@ -121,8 +121,19 @@ async def start_cmd(client, message):
 @bot.on_message(filters.photo & admin_filter)
 async def save_thumbnail(client, message):
     msg = await message.reply_text("📥 *Sauvegarde de la miniature...*")
-    supabase.table("bot_settings").upsert({"user_id": ADMIN, "thumbnail_file_id": message.photo.file_id}).execute()
-    await msg.edit("✅ **Miniature synchronisée de manière permanente !**")
+    try:
+        supabase.table("bot_settings").upsert({"user_id": ADMIN, "thumbnail_file_id": message.photo.file_id}).execute()
+        await msg.edit("✅ **Miniature synchronisée de manière permanente !**")
+    except Exception as e:
+        await msg.edit(f"❌ Erreur Supabase : {e}")
+
+@bot.on_message(filters.command("del_thumb") & admin_filter)
+async def delete_thumbnail(client, message):
+    try:
+        supabase.table("bot_settings").delete().eq("user_id", ADMIN).execute()
+        await message.reply_text("🗑️ **Miniature supprimée.**")
+    except Exception as e:
+        await message.reply_text(f"❌ Erreur de suppression : {e}")
 
 @bot.on_message((filters.document | filters.video) & admin_filter)
 async def receive_file(client, message):
@@ -133,7 +144,7 @@ async def receive_file(client, message):
     user_data[message.from_user.id] = {"file_id": file.file_id, "original_name": file.file_name}
     await message.reply_text(f"📥 **Fichier reçu :** `{file.file_name}`\n\nEnvoyez le **nouveau nom complet**.")
 
-@bot.on_message(filters.text & ~filters.command(["start"]) & admin_filter)
+@bot.on_message(filters.text & ~filters.command(["start", "del_thumb"]) & admin_filter)
 async def rename_process(client, message):
     user_id = message.from_user.id
     if user_id not in user_data: return
@@ -158,7 +169,7 @@ async def start_download_upload(client, callback_query):
     msg = await callback_query.message.edit("⚡ **Initialisation...**")
     start_time = time.time()
     
-    # 1. Téléchargement
+    # 1. Téléchargement du média d'origine
     custom_download_path = os.path.join(DOWNLOAD_DIR, file_info["original_name"])
     download_path = await client.download_media(
         message=file_info["file_id"], file_name=custom_download_path,
@@ -172,7 +183,7 @@ async def start_download_upload(client, callback_query):
     final_path = os.path.join(DOWNLOAD_DIR, new_name)
     os.rename(download_path, final_path)
     
-    # 2. Récupération de la miniature Supabase (Sécurisée)
+    # 2. Récupération de la miniature Supabase corrigée
     thumb_file = None
     try:
         response = supabase.table("bot_settings").select("thumbnail_file_id").eq("user_id", ADMIN).execute()
@@ -200,19 +211,18 @@ async def start_download_upload(client, callback_query):
         
         final_path, target_label = compress_video_adaptive(original_to_delete, compressed_path, orig_height)
         
-        # Nettoyage immédiat du gros fichier d'origine pour libérer le disque de Render
+        # Nettoyage immédiat du fichier original de 2 Go pour Render
         if original_to_delete and os.path.exists(original_to_delete) and final_path != original_to_delete:
             os.remove(original_to_delete)
             original_to_delete = None
             
         duration, width, height = get_video_metadata(final_path)
 
-    # 4. Envoi final avec légende (caption) enrichie
+    # 4. Envoi final avec légende enrichie
     await msg.edit("📤 **Téléversement vers Telegram...**")
     start_time = time.time()
     
     file_size_mo = os.path.getsize(final_path) / (1024 * 1024)
-    
     caption_text = (
         f"🎥 **Fichier :** `{new_name}`\n"
         f"⚙️ **Qualité :** `{target_label}`\n"
@@ -228,7 +238,7 @@ async def start_download_upload(client, callback_query):
             await client.send_video(
                 chat_id=ADMIN, video=final_path, caption=caption_text, thumb=thumb_file,
                 duration=duration, width=width, height=height, supports_streaming=True,
-                progress=progress_bar, progress_args=(msg, "📤 **Envoi de la vidéo optimisée...**", start_time)
+                progress=progress_bar, progress_args=(msg, "📤 Envoi de la vidéo optimisée...", start_time)
             )
         else:
             await client.send_document(
@@ -239,6 +249,7 @@ async def start_download_upload(client, callback_query):
     except Exception as e:
         await msg.edit(f"❌ Échec de l'envoi : {str(e)}")
     finally:
+        # Nettoyage des fichiers résiduels
         if original_to_delete and os.path.exists(original_to_delete): os.remove(original_to_delete)
         if os.path.exists(final_path): os.remove(final_path)
         if thumb_file and os.path.exists(thumb_file): os.remove(thumb_file)
@@ -248,17 +259,17 @@ if __name__ == "__main__":
     # Serveur HTTP virtuel pour maintenir Render Free actif
     import http.server
     import threading
-
+    
     class DummyServer(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"Bot actif")
-
+            
     def run_server():
         port = int(os.environ.get("PORT", 10000))
         http.server.HTTPServer(("0.0.0.0", port), DummyServer).serve_forever()
-
+        
     threading.Thread(target=run_server, daemon=True).start()
     print("Bot Jishu-Style Pro 2Go prêt !")
     bot.run()
