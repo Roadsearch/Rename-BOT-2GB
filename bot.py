@@ -31,7 +31,7 @@ ADMIN = int(os.environ.get("ADMIN", 0))
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL", ADMIN))
-START_PIC = os.environ.get("START_PIC", "https://telegra.ph/file/default_rename_pic.jpg")
+START_PIC = os.environ.get("START_PIC", "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500")
 
 # --- CLIENT OPTIMISÉ POUR LA VITESSE ---
 bot = Client(
@@ -49,6 +49,9 @@ user_data = {}
 task_queue = asyncio.Queue()
 is_processing = False
 
+# Dictionnaire global pour sécuriser le rafraîchissement des barres de progression
+last_update_times = {}
+
 # --- UTILS & METADONNÉES ---
 def get_video_metadata(file_path):
     duration, width, height = 0, 0, 0
@@ -65,47 +68,64 @@ def get_video_metadata(file_path):
     return duration, width, height
 
 async def progress_bar(current, total, reply_msg, text, start_time, mode="download"):
-    if not total or total == 0: return
-    now = time.time()
-    diff = now - start_time
-    
-    # Rafraîchissement toutes les 3 secondes pour contourner le bridage Telegram (Anti-Flood)
-    if round(diff % 3.00) == 0 or current == total:
-        percentage = current * 100 / total
-        speed = current / diff if diff > 0 else 0
-        eta = round((total - current) / speed) if speed > 0 else 0
-        eta_str = f"{eta}s" if eta < 60 else f"{eta//60}m {eta%60}s"
+    if not total or total == 0: 
+        return
         
-        if mode == "download":
-            completed_blocks = math.floor(percentage / 5)
-            bar = "▣" * completed_blocks + "▢" * (20 - completed_blocks)
-            
-            progress_text = (
-                f"{text}\n\n"
-                f"{bar}\n\n"
-                f" 🔗 **Taille :** {current / (1024*1024):.1f} MB | {total / (1024*1024):.1f} MB\n"
-                f"️ ⏳️ **Fait :** {percentage:.2f}%\n"
-                f" 🚀 **Vitesse :** {speed / (1024 * 1024):.2f} MB/s\n"
-                f"️ ⏰️ **Temps restant :** {eta_str}"
-            )
-        else:
-            completed_blocks = math.floor(percentage / 6)
-            bar = "█" * completed_blocks + "░" * (17 - completed_blocks)
-            
-            progress_text = (
-                f"{text}\n\n"
-                f"|{bar}| {percentage:.2f}%\n"
-                f"📦 **Taille :** {current / (1024*1024):.1f} / {total / (1024*1024):.1f} Mo\n"
-                f"⏳️ **Fait :** {percentage:.2f}%\n"
-                f"🚀 **Vitesse :** {speed / (1024 * 1024):.2f} Mo/s\n"
-                f"⏳ **Restant :** {eta_str}"
-            )
-            
-        try:
-            await reply_msg.edit(
-                progress_text,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Annuler la tâche ✖️", callback_data="cancel_action")]])
-            )
+    now = time.time()
+    msg_id = reply_msg.id
+    
+    # Récupérer le dernier moment où ce message a été modifié
+    last_update = last_update_times.get(msg_id, 0)
+    
+    # NE METTRE À JOUR que si 3.5 secondes se sont écoulées OU si le fichier est complètement fini
+    if (now - last_update) < 3.5 and current != total:
+        return
+
+    # Enregistrer le temps actuel pour ce message
+    last_update_times[msg_id] = now
+    
+    diff = now - start_time
+    percentage = current * 100 / total
+    speed = current / diff if diff > 0 else 0
+    eta = round((total - current) / speed) if speed > 0 else 0
+    eta_str = f"{eta}s" if eta < 60 else f"{eta//60}m {eta%60}s"
+    
+    if mode == "download":
+        completed_blocks = math.floor(percentage / 5)
+        bar = "▣" * completed_blocks + "▢" * (20 - completed_blocks)
+        
+        progress_text = (
+            f"{text}\n\n"
+            f"{bar}\n\n"
+            f" 🔗 **Taille :** {current / (1024*1024):.1f} MB | {total / (1024*1024):.1f} MB\n"
+            f"️ ⏳️ **Fait :** {percentage:.2f}%\n"
+            f" 🚀 **Vitesse :** {speed / (1024 * 1024):.2f} MB/s\n"
+            f"️ ⏰️ **Temps restant :** {eta_str}"
+        )
+    else:
+        completed_blocks = math.floor(percentage / 6)
+        bar = "█" * completed_blocks + "░" * (17 - completed_blocks)
+        
+        progress_text = (
+            f"{text}\n\n"
+            f"|{bar}| {percentage:.2f}%\n"
+            f"📦 **Taille :** {current / (1024*1024):.1f} / {total / (1024*1024):.1f} Mo\n"
+            f"⏳️ **Fait :** {percentage:.2f}%\n"
+            f"🚀 **Vitesse :** {speed / (1024 * 1024):.2f} Mo/s\n"
+            f"⏳ **Restant :** {eta_str}"
+        )
+        
+    try:
+        await reply_msg.edit(
+            progress_text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✖️ Annuler la tâche ✖️", callback_data="cancel_action")]])
+        )
+    except: 
+        pass
+        
+    # Nettoyage à la fin
+    if current == total and msg_id in last_update_times:
+        try: del last_update_times[msg_id]
         except: pass
 
 # --- COMMANDES CLASSIQUES (FRANÇAIS) ---
@@ -367,7 +387,7 @@ async def process_queue(client):
             # Téléchargement
             download_path = await client.download_media(
                 message=file_info["file_id"], file_name=custom_download_path,
-                progress=lambda c, t: progress_bar(c, t, msg, "🚀 ⚡ **Initialisation...** ⚡", start_time, mode="download")
+                progress=lambda c, t: progress_bar(c, t, msg, "🚀 ⚡ **Téléchargement en cours...** ⚡", start_time, mode="download")
             )
             
             if not download_path: continue
@@ -431,7 +451,7 @@ async def process_queue(client):
         except Exception as e: 
             print(f"Queue Error : {e}")
         finally:
-            if os.path.exists(final_path): os.remove(final_path)
+            if 'final_path' in locals() and os.path.exists(final_path): os.remove(final_path)
             if thumb_file and os.path.exists(thumb_file) and DOWNLOAD_DIR in thumb_file: os.remove(thumb_file)
             if user_id in user_data: del user_data[user_id]
             task_queue.task_done()
