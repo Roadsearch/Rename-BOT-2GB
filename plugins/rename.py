@@ -2,8 +2,9 @@
 plugins/rename.py — Pipeline de renommage.
 Correction : bot.listen() remplacé par pyromod ask() pour capturer
 correctement le nouveau nom ET /skip.
+Fix : Utilisation d'un cache temporaire pour éviter l'erreur BUTTON_DATA_INVALID (limite 64 octets).
 """
-import os, time, asyncio, logging
+import os, time, asyncio, logging, uuid
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from hachoir.metadata import extractMetadata
@@ -25,6 +26,8 @@ DOWNLOAD_DIR = "downloads/"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
 
+# Cache global pour éviter de surcharger le callback_data de Telegram
+TEMP_CALLBACK_CACHE = {}
 
 def human_size(num):
     for u in ["o", "Ko", "Mo", "Go"]:
@@ -78,6 +81,14 @@ async def receive_file(bot: Client, msg: Message):
     name, ext = os.path.splitext(file_name)
     suggested = f"{prefix}{name}{suffix}{ext}" if ext else f"{prefix}{name}{suffix}"
 
+    # Sauvegarde dans le cache temporaire
+    short_id = str(uuid.uuid4())[:8]
+    TEMP_CALLBACK_CACHE[short_id] = {
+        "file_id": file_id,
+        "user_id": user_id,
+        "file_name": file_name
+    }
+
     prompt = await msg.reply_text(
         f"📁 **Fichier reçu :** `{file_name}`\n"
         f"📦 **Taille :** `{human_size(file_size)}`\n\n"
@@ -85,7 +96,7 @@ async def receive_file(bot: Client, msg: Message):
         f"ou tape `skip` pour garder l'original.\n\n"
         f"**Suggéré :** `{suggested}`",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⏭ Garder le nom original", callback_data=f"skip_{file_id}_{user_id}"),
+            InlineKeyboardButton("⏭ Garder le nom original", callback_data=f"sk_{short_id}"),
         ]])
     )
 
@@ -119,14 +130,22 @@ async def receive_file(bot: Client, msg: Message):
     name2, ext2 = os.path.splitext(new_name)
     new_name = f"{prefix}{name2}{suffix}{ext2}"
 
+    # Génération d'un nouvel ID de cache pour l'étape du choix de format
+    fmt_id = str(uuid.uuid4())[:8]
+    TEMP_CALLBACK_CACHE[fmt_id] = {
+        "file_id": file_id,
+        "new_name": new_name,
+        "user_id": user_id
+    }
+
     btn = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📄 Document", callback_data=f"fmt_doc_{file_id}_{new_name}"),
-            InlineKeyboardButton("🎬 Vidéo",    callback_data=f"fmt_vid_{file_id}_{new_name}"),
+            InlineKeyboardButton("📄 Document", callback_data=f"f_doc_{fmt_id}"),
+            InlineKeyboardButton("🎬 Vidéo",    callback_data=f"f_vid_{fmt_id}"),
         ],
         [
-            InlineKeyboardButton("🎵 Audio",    callback_data=f"fmt_aud_{file_id}_{new_name}"),
-            InlineKeyboardButton("❌ Annuler",  callback_data=f"fmt_cancel_{user_id}"),
+            InlineKeyboardButton("🎵 Audio",    callback_data=f"f_aud_{fmt_id}"),
+            InlineKeyboardButton("❌ Annuler",  callback_data=f"f_can_{user_id}"),
         ]
     ])
     await answer.reply_text(
@@ -137,12 +156,18 @@ async def receive_file(bot: Client, msg: Message):
 
 # ── Callback : bouton "Garder le nom original" ────────────────────────────────
 
-@Client.on_callback_query(filters.regex(r"^skip_(.+)_(\d+)$"))
+@Client.on_callback_query(filters.regex(r"^sk_(.+)$"))
 async def skip_btn_cb(bot: Client, cb: CallbackQuery):
-    """Géré depuis le bouton inline — pas besoin de taper skip."""
-    parts   = cb.data.split("_", 2)
-    file_id = parts[1]
-    user_id = int(parts[2])
+    short_id = cb.data.split("_")[1]
+    cache = TEMP_CALLBACK_CACHE.get(short_id)
+
+    if not cache:
+        await cb.answer("❌ Session expirée. Renvoyez le fichier.", show_alert=True)
+        return
+
+    file_id = cache["file_id"]
+    user_id = cache["user_id"]
+    file_name = cache["file_name"]
 
     if cb.from_user.id != user_id:
         await cb.answer("❌ Ce n'est pas ton fichier.", show_alert=True)
@@ -150,25 +175,27 @@ async def skip_btn_cb(bot: Client, cb: CallbackQuery):
 
     await cb.answer("⏭ Nom original conservé")
 
-    # On récupère le nom original depuis le message
-    msg_text  = cb.message.text or ""
-    import re
-    m = re.search(r"Fichier reçu\s*:\s*`(.+?)`", msg_text)
-    file_name = m.group(1) if m else "fichier"
-
     prefix = await get_prefix(user_id) or ""
     suffix = await get_suffix(user_id) or ""
     name, ext = os.path.splitext(file_name)
     new_name  = f"{prefix}{name}{suffix}{ext}"
 
+    # On enregistre les données pour l'étape suivante
+    fmt_id = str(uuid.uuid4())[:8]
+    TEMP_CALLBACK_CACHE[fmt_id] = {
+        "file_id": file_id,
+        "new_name": new_name,
+        "user_id": user_id
+    }
+
     btn = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📄 Document", callback_data=f"fmt_doc_{file_id}_{new_name}"),
-            InlineKeyboardButton("🎬 Vidéo",    callback_data=f"fmt_vid_{file_id}_{new_name}"),
+            InlineKeyboardButton("📄 Document", callback_data=f"f_doc_{fmt_id}"),
+            InlineKeyboardButton("🎬 Vidéo",    callback_data=f"f_vid_{fmt_id}"),
         ],
         [
-            InlineKeyboardButton("🎵 Audio",    callback_data=f"fmt_aud_{file_id}_{new_name}"),
-            InlineKeyboardButton("❌ Annuler",  callback_data=f"fmt_cancel_{user_id}"),
+            InlineKeyboardButton("🎵 Audio",    callback_data=f"f_aud_{fmt_id}"),
+            InlineKeyboardButton("❌ Annuler",  callback_data=f"f_can_{user_id}"),
         ]
     ])
     await cb.message.edit_text(
@@ -179,7 +206,7 @@ async def skip_btn_cb(bot: Client, cb: CallbackQuery):
 
 # ── Callback : annulation ─────────────────────────────────────────────────────
 
-@Client.on_callback_query(filters.regex(r"^fmt_cancel_(\d+)$"))
+@Client.on_callback_query(filters.regex(r"^f_can_(\d+)$"))
 async def cancel_rename(bot: Client, cb: CallbackQuery):
     user_id = int(cb.data.split("_")[2])
     if cb.from_user.id != user_id:
@@ -192,13 +219,20 @@ async def cancel_rename(bot: Client, cb: CallbackQuery):
 
 # ── Callback : choix du format ────────────────────────────────────────────────
 
-@Client.on_callback_query(filters.regex(r"^fmt_(doc|vid|aud)_(.+?)_(.+)$"))
+@Client.on_callback_query(filters.regex(r"^f_(doc|vid|aud)_(.+)$"))
 async def format_chosen(bot: Client, cb: CallbackQuery):
-    parts    = cb.data.split("_", 3)
-    fmt      = parts[1]
-    file_id  = parts[2]
-    new_name = parts[3]
-    user_id  = cb.from_user.id
+    parts = cb.data.split("_")
+    fmt = parts[1]
+    fmt_id = parts[2]
+
+    cache = TEMP_CALLBACK_CACHE.get(fmt_id)
+    if not cache:
+        await cb.answer("❌ Données introuvables ou expirées. Réessayez.", show_alert=True)
+        return
+
+    file_id = cache["file_id"]
+    new_name = cache["new_name"]
+    user_id = cache["user_id"]
 
     if cb.from_user.id != user_id:
         await cb.answer("❌ Ce n'est pas ton fichier.", show_alert=True)
@@ -297,4 +331,6 @@ async def format_chosen(bot: Client, cb: CallbackQuery):
 
     finally:
         cleanup_files(dl_path, thumb_path)
+        # On nettoie le cache après usage pour éviter d'encombrer la RAM
+        TEMP_CALLBACK_CACHE.pop(fmt_id, None)
         release(user_id)
