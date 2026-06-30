@@ -13,10 +13,14 @@ Rendu final dans Telegram :
 ║  ⏱️  Reste : 9s          ║
 ║  ⏳  Écoulé : 21s        ║
 ╚══════════════════════════╝
+helper/progress.py
+Barre de progression pro — utilisée partout dans le bot.
+Correction : __call__ rendu synchrone pour la compatibilité absolue avec les callbacks de Pyrogram.
 """
 
 import time
 import logging
+import asyncio
 from pyrogram.types import Message
 
 logger = logging.getLogger(__name__)
@@ -114,7 +118,7 @@ class ProgressUpdater:
     Classe réutilisable pour mettre à jour une barre de progression.
     Throttle : 1 mise à jour max toutes les UPDATE_INTERVAL secondes.
     """
-    UPDATE_INTERVAL = 3.0  # secondes
+    UPDATE_INTERVAL = 3.5  # Modifié à 3.5s pour respecter les limites de l'API Telegram
 
     def __init__(
         self,
@@ -128,12 +132,26 @@ class ProgressUpdater:
         self.start     = time.time()
         self._last_upd = 0.0
 
-    async def __call__(self, current: int, total: int):
-        """Compatible Pyrogram progress= callback."""
+    def __call__(self, current: int, total: int):
+        """
+        Callback synchrone requis par Pyrogram pour progress=.
+        Redirige l'affichage vers une tâche asynchrone en arrière-plan.
+        """
         now = time.time()
         if now - self._last_upd < self.UPDATE_INTERVAL:
             return
         self._last_upd = now
+        
+        # Récupération de la boucle d'événements courante pour planifier l'édition du message
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self.update_telegram(current, total, now))
+        except Exception as e:
+            logger.error(f"[Progress] Erreur lors de la planification : {e}")
+
+    async def update_telegram(self, current: int, total: int, now: float):
+        """Effectue la véritable modification asynchrone du message Telegram."""
         elapsed = now - self.start
         text = build_progress_text(
             current, total, elapsed,
@@ -155,8 +173,8 @@ class ProgressUpdater:
         )
         try:
             await self.msg.edit_text(text, parse_mode="html")
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"[Progress] Échec de la mise à jour finale : {e}")
 
     async def set_phase(self, phase: str, filename: str = ""):
         """Change la phase (ex: download → upload) et réinitialise le timer."""
@@ -171,5 +189,5 @@ class ProgressUpdater:
                 f"{emoji} <b>{label}...</b>",
                 parse_mode="html"
             )
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"[Progress] Échec du changement de phase visuel : {e}")
