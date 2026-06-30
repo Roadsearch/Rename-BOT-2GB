@@ -110,8 +110,7 @@ WEBHOOK         = false
 
 - **Développeur :** [LabZero](https://t.me/LabZero0)
 - **Programmeur :** [Dev Suayki](https://t.me/Suayki)
-- Bot original : [JishuDeveloper](https://github.com/JishuDeveloper)
-
+  
 
 ---
 
