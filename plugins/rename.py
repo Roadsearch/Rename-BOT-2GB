@@ -1,7 +1,6 @@
 """
 plugins/rename.py — Pipeline de renommage.
-Correction : bot.listen() remplacé par pyromod ask() pour capturer
-correctement le nouveau nom ET /skip.
+Correction : bot.listen() configuré avec chat_id= pour éviter le TypeError.
 Fix : Utilisation d'un cache temporaire pour éviter l'erreur BUTTON_DATA_INVALID (limite 64 octets).
 """
 import os, time, asyncio, logging, uuid
@@ -103,7 +102,7 @@ async def receive_file(bot: Client, msg: Message):
     # ── Écoute de la réponse (pyromod) ───────────────────────────────────────
     try:
         answer: Message = await bot.listen(
-            msg.chat.id,
+            chat_id=msg.chat.id,
             filters=filters.text & filters.private,
             timeout=120,
         )
@@ -331,6 +330,6 @@ async def format_chosen(bot: Client, cb: CallbackQuery):
 
     finally:
         cleanup_files(dl_path, thumb_path)
-        # On nettoie le cache après usage pour éviter d'encombrer la RAM
+        # Nettoyage du cache pour libérer de l'espace mémoire
         TEMP_CALLBACK_CACHE.pop(fmt_id, None)
         release(user_id)
