@@ -4,6 +4,9 @@ Bot Telegram de renommage de fichiers jusqu'à 2 Go.
 Fork adapté de [JishuDeveloper/Rename-Bot-2GB](https://github.com/JishuDeveloper/Rename-Bot-2GB) :  
 **MongoDB/motor → Supabase (PostgreSQL)** · **Heroku → Render**
 
+> **Développeur :** [LabZero](https://t.me/LabZero0)  
+> **Programmeur :** [Dev Suayki](https://t.me/Suayki)
+
 ---
 
 ## Structure du projet
@@ -105,5 +108,44 @@ WEBHOOK         = false
 
 ## Crédits
 
-- [JishuDeveloper](https://github.com/JishuDeveloper) — bot original
-- [Madflix Official](https://t.me/MadflixBotz)
+- **Développeur :** [LabZero](https://t.me/LabZero0)
+- **Programmeur :** [Dev Suayki](https://t.me/Suayki)
+- Bot original : [JishuDeveloper](https://github.com/JishuDeveloper)
+
+
+---
+
+## UptimeRobot — Garder le bot actif 24h/24
+
+Render free tier met le Web Service en veille après **15 min d'inactivité**.  
+Configure UptimeRobot pour pinger le bot toutes les 5 minutes :
+
+1. Crée un compte sur [uptimerobot.com](https://uptimerobot.com)
+2. **New Monitor** → type **HTTP(s)**
+3. URL : `https://ton-app.onrender.com/health`
+4. Intervalle : **5 minutes**
+5. **Create Monitor** ✅
+
+Le endpoint `/health` répond `200 OK` et maintient le service actif.
+
+---
+
+## Limites anti-flood
+
+Par défaut : **5 fichiers maximum par minute** par utilisateur.  
+Modifiable dans `helper/flood_control.py` :
+
+```python
+MAX_REQUESTS = 5   # nombre max de fichiers
+WINDOW_SEC   = 60  # fenêtre de temps en secondes
+```
+
+## File d'attente
+
+Maximum **3 fichiers traités simultanément** sur tout le bot,  
+et **1 seul fichier à la fois** par utilisateur.  
+Modifiable dans `helper/queue_manager.py` :
+
+```python
+_global_sem = asyncio.Semaphore(3)  # parallélisme global
+```

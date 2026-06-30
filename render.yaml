@@ -1,0 +1,30 @@
+services:
+  - type: web                        # Web Service Render
+    name: rename-bot-2gb
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      # ── Telegram ─────────────────────────────────────────────────────
+      - key: BOT_TOKEN
+        sync: false                  # à renseigner dans le dashboard Render
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: ADMIN
+        sync: false                  # ex. "123456789"
+      - key: LOG_CHANNEL
+        sync: false                  # ex. "-1001234567890"
+      # ── Supabase ─────────────────────────────────────────────────────
+      - key: SUPABASE_URL
+        sync: false                  # https://xxxx.supabase.co
+      - key: SUPABASE_KEY
+        sync: false                  # service_role key (secret)
+      # ── Optionnel ─────────────────────────────────────────────────────
+      - key: FORCE_SUBS
+        sync: false                  # username du canal sans @
+        sync: false                  # URL d'une image de démarrage
+      - key: WEBHOOK
+        value: "true"                # true = Web Service (écoute sur 8080)
