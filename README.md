@@ -1,4 +1,4 @@
-<img src="https://graph.org/file/77d2eddf9657a87acb881.jpg" alt="logo" target="/blank">
+<img src="https://graph.org/file/e834da13a95b1525d0cc8-91c57a93acb94c549c.jpg" alt="logo" target="/blank">
 
 <h1 align="center">
  <b><a href="https://t.me/LabZero0" target="/blank"> Rename Bot 2GB </a></>
