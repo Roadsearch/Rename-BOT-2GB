@@ -123,7 +123,8 @@ async def doc(bot, update):
 
     if c_caption:
          try:
-             caption = c_caption.format(filename=new_filename, filesize=humanbytes(media.file_size), duration=convert(duration))
+             caption_filename = os.path.splitext(new_filename)[0]
+             caption = c_caption.format(filename=caption_filename, filesize=humanbytes(media.file_size), duration=convert(duration))
          except Exception as e:
              return await ms.edit(text=f"Erreur Dans Votre Légende, Argument Non Reconnu : ({e})")             
     else:
