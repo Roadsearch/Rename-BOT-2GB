@@ -9,7 +9,7 @@ import os
 import pyromod
 import pyrogram.utils
 
-pyrogram.utils.MIN_CHANNEL_ID = -100999999999999
+pyrogram.utils.MIN_CHANNEL_ID = -1002909111512
 
 
 class Bot(Client):
