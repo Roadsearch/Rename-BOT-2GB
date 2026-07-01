@@ -1,0 +1,67 @@
+{
+    "name": "Renamer Bot 2GB",
+    "description": "Bot Telegram de Renommage de Fichiers 2GB",
+    "logo": "https://graph.org/file/2c62c5c158d42b0dc8deb.jpg",
+    "keywords": ["Renamer Bot 2GB", "Mongo DB"],    
+    "repository": "https://github.com/jishusinha/Rename-Bot-2GB",
+    "env": {
+        "API_ID": {
+            "description": "Votre APP ID depuis my.telegram.org ",
+            "value": "",
+            "required": true
+        },
+        "API_HASH": {
+            "description": "Votre API Hash depuis my.telegram.org ",
+            "value": "",
+            "required": true
+        },
+        "WEBHOOK": {
+            "description": "Si votre serveur a besoin d'un service web ! valeur = True sinon valeur = False",
+            "value": "False",
+            "required": false
+        },
+        "FORCE_SUBS": {
+            "description": "Le nom d'utilisateur de votre canal d'abonnement forcé sans [@] ",
+            "value": "",
+            "required": false 
+        },
+        "BOT_TOKEN": {
+            "description": "Votre Token de Bot depuis @BotFather",
+            "value": "",
+            "required": true
+        },
+        "ADMIN": {
+            "description":"Ajoutez votre ID utilisateur, plusieurs séparés par des espaces",
+            "value": "",
+            "required": true
+        },
+        "LOG_CHANNEL": {
+            "description":"Canal d'envoi des logs du Bot (créez simplement un canal privé, ajoutez le bot comme admin et récupérez l'id du canal pour cette variable) ⚠️ l'id doit commencer par -100",
+            "value": "",
+            "required": true          
+        },
+        "SUPABASE_URL": {
+            "description": "L'URL de votre projet Supabase (Project Settings > API)",
+            "value": "",
+            "required": true
+        },
+        "SUPABASE_KEY": {
+            "description": "La clé API Supabase 'service_role' (Project Settings > API) — pas la clé 'anon', car les tables sont protégées par RLS",
+            "value": "",
+            "required": true
+        },
+        "START_PIC": {
+            "description": "Photo (jpg/png) ou GIF (.gif/.mp4) de la commande start de votre Bot",
+            "value": "https://graph.org/file/77d2eddf9657a87acb881.jpg",
+            "required": false
+        }
+    },
+    "buildpacks": [
+        {
+            "url": "heroku/python"
+        },
+        {
+            "url": "https://github.com/jonathanong/heroku-buildpack-ffmpeg-latest"
+        }
+    ]
+}
