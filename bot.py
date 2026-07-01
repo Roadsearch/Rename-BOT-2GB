@@ -43,10 +43,10 @@ class Bot(Client):
         
         if Config.LOG_CHANNEL:
             try:
-                curr = datetime.now(timezone("Asia/Kolkata"))
+                curr = datetime.now(timezone("Africa/Dakar"))
                 date = curr.strftime('%d %B, %Y')
                 time = curr.strftime('%I:%M:%S %p')
-                await self.send_message(Config.LOG_CHANNEL, f"**{me.mention} A Redémarré !!**\n\n📅 Date : `{date}`\n⏰ Heure : `{time}`\n🌐 Fuseau horaire : `Asia/Kolkata`\n\n🉐 Version : `v{__version__} (Layer {layer})`</b>")                                
+                await self.send_message(Config.LOG_CHANNEL, f"**{me.mention} A Redémarré !!**\n\n📅 Date : `{date}`\n⏰ Heure : `{time}`\n🌐 Fuseau horaire : `Africa/Dakar`\n\n🉐 Version : `v{__version__} (Layer {layer})`</b>")                                
             except:
                 print("Merci d'ajouter ce bot comme admin dans votre canal de logs")
 
